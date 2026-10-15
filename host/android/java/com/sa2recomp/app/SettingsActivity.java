@@ -56,8 +56,9 @@ public class SettingsActivity extends Activity {
         col.addView(bar);
 
         col.addView(Ui.heading(this, "Debug"));
-        col.addView(Ui.check(this, "Debug logs (copied to Internal storage/OpenSA2/logs after each session)",
-                p.getBoolean("debug_logs", false), on -> p.edit().putBoolean("debug_logs", on).apply()));
+        col.addView(Ui.check(this, "Save session logs to Internal storage/OpenSA2/logs (the newest "
+                + SessionLogs.KEEP + " sessions)", p.getBoolean("save_logs", true),
+                on -> p.edit().putBoolean("save_logs", on).apply()));
         col.addView(Ui.check(this, "Performance hints (ADPF)", p.getBoolean("adpf", true),
                 on -> p.edit().putBoolean("adpf", on).apply()));
         col.addView(Ui.row(this, Ui.button(this, "Extra game settings (SA2_ lines)", v -> editExtra())));

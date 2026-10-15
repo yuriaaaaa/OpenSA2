@@ -29,7 +29,8 @@ import java.util.TimeZone;
  *   OpenSA2/game/      the 2012 PC game folder (sonic2app.exe and resource/), copied as is
  *   OpenSA2/mods/      sa2-mod-loader mods, one folder each with its mod.ini
  *   OpenSA2/Codes.lst  the mod loader's code list (downloaded by the Codes screen)
- *   OpenSA2/logs/      session logs, when Debug logs is on
+ *   OpenSA2/logs/      each session's logs (SessionLogs), unless Settings turns that off
+ *   OpenSA2/saves/     the game's saves, copied out after each session (Saves)
  *
  * The app needs "All files access" for that folder; the game process the session starts runs
  * as the app's own user, so it reads the game folder with the same access.
@@ -262,11 +263,15 @@ final class OpenSa2 {
     }
 
     static void writeText(File f, String text) throws IOException {
+        writeBytes(f, text.getBytes(StandardCharsets.UTF_8));
+    }
+
+    static void writeBytes(File f, byte[] data) throws IOException {
         File dir = f.getParentFile();
         if (dir != null && !dir.isDirectory() && !dir.mkdirs()) throw new IOException("cannot create " + dir);
         File tmp = new File(f.getPath() + ".part");
         try (OutputStream out = new FileOutputStream(tmp)) {
-            out.write(text.getBytes(StandardCharsets.UTF_8));
+            out.write(data);
         }
         if (!tmp.renameTo(f)) {
             f.delete();

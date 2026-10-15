@@ -35,6 +35,13 @@ import java.util.Set;
  * mod turned off is taken out again and an unchanged file is not copied twice. The game folder
  * itself is never written.
  *
+ * Character model folders (gd_PC/sonicmdl/ with sonicmdl.ini and *.sa2mdl files, which the
+ * loader assembles at load time) are built into the model file the game reads, sonicmdl.prs
+ * (ModelFolder), once per change, in files/modbuild/.
+ *
+ * Paths a mod.ini names (IncludeDir, [ReplaceFiles], Codes) stay inside the mod and game
+ * folders: a path that climbs out ("..") or is absolute is refused.
+ *
  * What cannot work, and is shown on the mod: DLL mods (Windows x86 code), EXEData/DLLData
  * (data the loader patches into the program's memory at start), and the loader's texture-pack
  * folders (textures/, replacetex/: loose images the loader's Direct3D hook swaps in).
@@ -50,15 +57,62 @@ final class ModManager {
         final Map<String, String> replaceFiles = new LinkedHashMap<>();
         int files;                                        // gd_PC files found
         boolean textures;
+        final List<String> modelFolders = new ArrayList<>();   // gd_PC/<name>/ built into <name>.prs
+        final List<String> refused = new ArrayList<>();        // mod.ini paths that leave the mod
 
         List<String> warnings() {
             List<String> w = new ArrayList<>();
-            if (!dllFile.isEmpty()) w.add("Has a DLL (" + dllFile + "): Windows code, it cannot run here");
+            if (!dllFile.isEmpty()) w.add(dllNote(dllFile));
             if (!exeData.isEmpty() || !dllData.isEmpty()) w.add("EXEData/DLLData patches are not supported");
             if (textures) w.add("Texture-pack folders (textures/, replacetex/) are not supported yet");
+            for (String r : refused) w.add("Refused a path that leaves the mod folder: " + r);
             if (files == 0 && replaceFiles.isEmpty() && codes.isEmpty()) w.add("Nothing this port can use");
             return w;
         }
+
+        /** What works that the mod list should say. */
+        List<String> notes() {
+            List<String> n = new ArrayList<>();
+            if (!modelFolders.isEmpty())
+                n.add("Model folder" + (modelFolders.size() > 1 ? "s " : " ") + String.join(", ", modelFolders)
+                      + ": built into the game's model file" + (modelFolders.size() > 1 ? "s" : "") + " at Play");
+            return n;
+        }
+    }
+
+    /**
+     * Why a DLL does nothing here. The game is recompiled ahead of time (no x86 code runs, and
+     * patches to the game's x86 code have nothing to land on), so a mod's Windows DLL cannot load;
+     * its files still do. Known ones say what is missing.
+     */
+    static String dllNote(String dll) {
+        String l = dll.toLowerCase(Locale.ROOT);
+        String what = null;
+        if (l.endsWith("chestjiggle.dll")) what = "chest jiggle physics";
+        else if (l.contains("jiggle")) what = "jiggle physics";
+        if (what != null)
+            return dll + " adds " + what + " on PC. That part is Windows code and cannot run here; "
+                   + "the mod's models and textures still load.";
+        return "Has a DLL (" + dll + "): Windows code, which cannot run in the recompiled game. "
+               + "Its files still load; whatever the DLL itself adds is missing.";
+    }
+
+    /**
+     * A path from a mod.ini, '/'-separated and relative, or null when it is absolute or climbs out
+     * with "..": IncludeDir, [ReplaceFiles] and Codes paths stay inside the mod and game folders.
+     */
+    static String safeRel(String p) {
+        if (p == null) return null;
+        String t = p.trim().replace('\\', '/');
+        if (t.startsWith("/") || t.indexOf(':') >= 0) return null;
+        StringBuilder b = new StringBuilder();
+        for (String part : t.split("/")) {
+            if (part.isEmpty() || part.equals(".")) continue;
+            if (part.equals("..")) return null;
+            if (b.length() > 0) b.append('/');
+            b.append(part);
+        }
+        return b.length() == 0 ? null : b.toString();
     }
 
     private ModManager() {}
@@ -112,8 +166,12 @@ final class ModManager {
     // ------------------------------------------------------------ scanning
 
     static List<Mod> scan() {
+        return scan(OpenSa2.modsDir());
+    }
+
+    static List<Mod> scan(File modsDir) {
         List<Mod> out = new ArrayList<>();
-        File[] dirs = OpenSa2.modsDir().listFiles();
+        File[] dirs = modsDir.listFiles();
         if (dirs == null) return out;
         Arrays.sort(dirs);
         for (File d : dirs) {
@@ -144,19 +202,45 @@ final class ModManager {
             } catch (NumberFormatException ignored) {
             }
             for (int i = 0; i < inc; i++) {
-                String rel = get(cfg, "IncludeDir" + i);
-                if (!rel.isEmpty()) m.roots.add(new File(d, rel.replace('\\', '/')));
+                String raw = get(cfg, "IncludeDir" + i);
+                if (raw.isEmpty()) continue;
+                String rel = safeRel(raw);
+                if (rel == null) m.refused.add("IncludeDir" + i + "=" + raw);
+                else m.roots.add(OpenSa2.resolveCase(d, rel));
             }
             for (Map.Entry<String, Map<String, String>> e : g.entrySet()) {
-                if (e.getKey().equalsIgnoreCase("ReplaceFiles")) m.replaceFiles.putAll(e.getValue());
+                if (!e.getKey().equalsIgnoreCase("ReplaceFiles")) continue;
+                for (Map.Entry<String, String> r : e.getValue().entrySet()) {
+                    if (safeRel(r.getKey()) == null || safeRel(r.getValue()) == null) m.refused.add(r.getKey() + "=" + r.getValue());
+                    else m.replaceFiles.put(r.getKey(), r.getValue());
+                }
+            }
+            if (!m.codes.isEmpty() && safeRel(m.codes) == null) {
+                m.refused.add("Codes=" + m.codes);
+                m.codes = "";
             }
             for (File r : m.roots) {
                 File gd = child(r, "gd_PC");
                 m.files += count(gd);
+                // A model folder is one game file (its .prs), whatever it holds.
+                for (File md : modelFolders(gd)) {
+                    m.files += 1 - count(md);
+                    if (!m.modelFolders.contains(md.getName())) m.modelFolders.add(md.getName());
+                }
                 if (child(r, "textures").isDirectory() || child(r, "replacetex").isDirectory()) m.textures = true;
             }
             out.add(m);
         }
+        return out;
+    }
+
+    /** The model folders right under a mod's gd_PC (ModelFolder). */
+    static List<File> modelFolders(File gd) {
+        List<File> out = new ArrayList<>();
+        File[] kids = gd.listFiles();
+        if (kids == null) return out;
+        Arrays.sort(kids);
+        for (File k : kids) if (k.isDirectory() && ModelFolder.is(k)) out.add(k);
         return out;
     }
 
@@ -224,54 +308,107 @@ final class ModManager {
                 || l.startsWith("resource/gd_pc/dll/");
     }
 
-    private static void walk(File dir, String rel, Map<String, File> into) {
+    /** The files under `dir` as game paths (`rel`/...): folded path -> file, and -> the mod's spelling. */
+    private static void walk(File dir, String rel, Map<String, File> into, Map<String, String> spell, Set<File> skip) {
         File[] kids = dir.listFiles();
         if (kids == null) return;
         for (File k : kids) {
             String r = rel + "/" + k.getName();
-            if (k.isDirectory()) walk(k, r, into);
-            else if (k.isFile() && !skipped(r)) into.put(r.toLowerCase(Locale.ROOT), k);
+            if (k.isDirectory()) {
+                if (!skip.contains(k)) walk(k, r, into, spell, skip);
+            } else if (k.isFile() && !skipped(r)) {
+                String key = r.toLowerCase(Locale.ROOT);
+                into.remove(key);
+                into.put(key, k);
+                spell.put(key, r);
+            }
+        }
+    }
+
+    /** A model folder's <name>.prs, built into files/modbuild/<mod>/ when its files changed. */
+    private static File builtModel(File filesDir, Mod m, File folder, Progress p) {
+        File dir = new File(new File(filesDir, "modbuild"), m.folder.replaceAll("[^A-Za-z0-9._-]", "_"));
+        File prs = new File(dir, folder.getName() + ".prs");
+        File sig = new File(dir, folder.getName() + ".sig");
+        String want = ModelFolder.signature(folder);
+        if (prs.isFile() && want.equals(OpenSa2.readText(sig))) return prs;
+        try {
+            p.line("Building " + folder.getName() + ".prs from " + m.name + "'s " + folder.getName() + " folder...");
+            ModelFolder.Result r = ModelFolder.buildPrs(folder, prs);
+            OpenSa2.writeText(sig, want);
+            p.line("Built " + folder.getName() + ".prs: " + ModelFolder.describe(r));
+            return prs;
+        } catch (IOException | RuntimeException e) {
+            prs.delete();
+            sig.delete();
+            p.line("Could not build " + folder.getName() + ".prs from " + m.name + ": " + e.getMessage()
+                   + " (the game's own model is used)");
+            return null;
         }
     }
 
     /** Copies the enabled mods' files into the overlay and takes out the ones no longer wanted. */
     static void apply(Context c, File readRoot, Progress p) throws IOException {
-        File overlay = OpenSa2.overlayDir(c);
+        applyMods(active(c), c.getFilesDir(), OpenSa2.overlayDir(c), OpenSa2.modsDir(), readRoot, p);
+    }
+
+    /** apply() for the given mods, in order, with the folders named (the app's files folder holds
+     * the manifest and the built model files). */
+    static void applyMods(List<Mod> mods, File filesDir, File overlay, File modsDir, File readRoot, Progress p)
+            throws IOException {
         Map<String, File> want = new LinkedHashMap<>();   // folded game path -> source
         Map<String, String> spell = new HashMap<>();      // folded -> as the mod spells it
-        for (Mod m : active(c)) {
+        for (Mod m : mods) {
             Map<String, File> mine = new LinkedHashMap<>();
+            Map<String, String> mySpell = new HashMap<>();
             for (File r : m.roots) {
                 File gd = child(r, "gd_PC");
-                if (gd.isDirectory()) walk(gd, "resource/gd_PC", mine);
+                if (!gd.isDirectory()) continue;
+                List<File> models = modelFolders(gd);
+                walk(gd, "resource/gd_PC", mine, mySpell, new HashSet<>(models));
+                // A model folder wins over the same mod's own .prs of that name, as in the loader.
+                for (File md : models) {
+                    File built = builtModel(filesDir, m, md, p);
+                    if (built == null) continue;
+                    String rel = "resource/gd_PC/" + md.getName() + ".prs";
+                    String key = rel.toLowerCase(Locale.ROOT);
+                    mine.remove(key);
+                    mine.put(key, built);
+                    mySpell.put(key, rel);
+                }
             }
             for (Map.Entry<String, String> e : m.replaceFiles.entrySet()) {
-                String to = e.getKey().replace('\\', '/');
-                String from = e.getValue().replace('\\', '/');
+                String to = safeRel(e.getKey());
+                String from = safeRel(e.getValue());
+                if (to == null || from == null) continue;
                 File src = from.toLowerCase(Locale.ROOT).startsWith("mods/")
-                        ? OpenSa2.resolveCase(OpenSa2.modsDir(), from.substring(5))
+                        ? OpenSa2.resolveCase(modsDir, from.substring(5))
                         : OpenSa2.resolveCase(readRoot, from);
-                if (src.isFile() && !skipped(to)) mine.put(to.toLowerCase(Locale.ROOT), src);
+                if (src.isFile() && !skipped(to)) {
+                    String key = to.toLowerCase(Locale.ROOT);
+                    mine.remove(key);
+                    mine.put(key, src);
+                    mySpell.put(key, to);
+                }
             }
             for (Map.Entry<String, File> e : mine.entrySet()) {
                 want.remove(e.getKey());   // a later mod wins, and keeps its own place
                 want.put(e.getKey(), e.getValue());
-            }
-            for (File r : m.roots) {
-                File gd = child(r, "gd_PC");
-                if (!gd.isDirectory()) continue;
-                Map<String, File> tmp = new HashMap<>();
-                walk(gd, "resource/gd_PC", tmp);
-                for (Map.Entry<String, File> e : tmp.entrySet()) {
-                    String path = e.getValue().getAbsolutePath();
-                    String sub = path.substring(gd.getAbsolutePath().length() + 1);
-                    spell.put(e.getKey(), "resource/gd_PC/" + sub.replace('\\', '/'));
-                }
+                spell.put(e.getKey(), mySpell.containsKey(e.getKey()) ? mySpell.get(e.getKey()) : e.getKey());
             }
             p.line("Mod on: " + m.name + " (" + mine.size() + " file(s))");
+            if (!m.dllFile.isEmpty()) p.line("  " + dllNote(m.dllFile));
         }
 
-        File manifest = new File(c.getFilesDir(), "mods-applied.tsv");
+        // Texture archives a mod replaces: how they differ from the game's (Pak.compare).
+        for (Map.Entry<String, File> e : want.entrySet()) {
+            if (!e.getKey().endsWith(".pak")) continue;
+            File game = OpenSa2.resolveCase(readRoot, spell.containsKey(e.getKey()) ? spell.get(e.getKey()) : e.getKey());
+            if (!game.isFile()) continue;
+            for (String l : Pak.compare(game, e.getValue())) p.line("  " + l);
+        }
+
+        File manifest = new File(filesDir, "mods-applied.tsv");
         Map<String, String[]> old = new HashMap<>();
         String text = OpenSa2.readText(manifest);
         if (text != null) {
@@ -281,9 +418,12 @@ final class ModManager {
             }
         }
         int removed = 0, copied = 0, kept = 0;
+        String inside = overlay.getCanonicalPath() + File.separator;
         for (Map.Entry<String, String[]> e : old.entrySet()) {
             if (want.containsKey(e.getKey())) continue;
             File dest = new File(e.getValue()[4]);
+            // Only ever what was put in the overlay.
+            if (!dest.getCanonicalPath().startsWith(inside)) continue;
             if (dest.isFile() && dest.delete()) removed++;
         }
         StringBuilder out = new StringBuilder();

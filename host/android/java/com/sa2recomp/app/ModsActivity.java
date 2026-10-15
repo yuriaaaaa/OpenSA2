@@ -7,8 +7,10 @@ import android.database.Cursor;
 import android.net.Uri;
 import android.os.Bundle;
 import android.provider.OpenableColumns;
+import android.text.InputType;
 import android.widget.Button;
 import android.widget.CheckBox;
+import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -22,13 +24,13 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipInputStream;
 
 /**
  * The mod list: the sa2-mod-loader mods in Internal storage/OpenSA2/mods/ (a folder with a
- * mod.ini each), in load order. Lower in the list wins, as in the mod manager. A .zip can be added
- * from any file app; it is unpacked into the mods folder. Play puts the enabled mods in place.
+ * mod.ini each), in load order. Lower in the list wins, as in the mod manager. A .zip or .7z can
+ * be added from any file app, or a mod installed straight from GameBanana by its link, id, or a
+ * one-click (sa2mm:) link the browser hands over (ModInstall, GameBanana). Play puts the enabled
+ * mods in place.
  */
 public class ModsActivity extends Activity {
     private static final int PICK_ZIP = 3;
@@ -45,12 +47,29 @@ public class ModsActivity extends Activity {
                 + "(sa2-mod-loader / SA Mod Manager mods for the Steam game). Mods lower in the list win. "
                 + "Changes apply at the next Play.", 13, 0xFFA8B4C8));
         col.addView(Ui.row(this,
-                Ui.button(this, "Add mod from ZIP", v -> pickZip()),
-                Ui.button(this, "Rescan", v -> load())));
+                Ui.button(this, "Add mod from file", v -> pickZip()),
+                Ui.button(this, "Install from GameBanana", v -> gameBananaDialog())));
+        col.addView(Ui.row(this, Ui.button(this, "Rescan", v -> load())));
         mList = new LinearLayout(this);
         mList.setOrientation(LinearLayout.VERTICAL);
         col.addView(mList);
         load();
+        handleOneClick(getIntent());
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        handleOneClick(intent);
+    }
+
+    /** A GameBanana one-click (sa2mm:) link, or a gamebanana.com link, the browser handed over. */
+    private void handleOneClick(Intent it) {
+        if (it == null || it.getData() == null) return;
+        String uri = it.getData().toString();
+        if (!uri.startsWith(GameBanana.SCHEME + ":") && !uri.contains("gamebanana.com")) return;
+        installFromGameBanana(uri);
     }
 
     @Override
@@ -104,8 +123,13 @@ public class ModsActivity extends Activity {
             b.append(m.files).append(" game file(s)");
             if (!m.replaceFiles.isEmpty()) b.append(", ").append(m.replaceFiles.size()).append(" replaced");
             if (!m.codes.isEmpty()) b.append(", has codes");
-            for (String w : warn) b.append("\n! ").append(w);
-            mList.addView(Ui.text(this, b.toString(), 12, warn.isEmpty() ? 0xFFA8B4C8 : OpenSa2.GOLD));
+            for (String n : m.notes()) b.append("\n").append(n);
+            mList.addView(Ui.text(this, b.toString(), 12, 0xFFA8B4C8));
+            if (!warn.isEmpty()) {
+                StringBuilder w = new StringBuilder();
+                for (String x : warn) w.append(w.length() == 0 ? "! " : "\n! ").append(x);
+                mList.addView(Ui.text(this, w.toString(), 12, OpenSa2.GOLD));
+            }
             Button up = Ui.button(this, "Up", v -> move(at, -1));
             Button down = Ui.button(this, "Down", v -> move(at, 1));
             Button info = Ui.button(this, "Info", v -> info(m));
@@ -132,6 +156,7 @@ public class ModsActivity extends Activity {
         if (!m.category.isEmpty()) b.append("Category: ").append(m.category).append('\n');
         b.append("Folder: ").append(m.dir.getAbsolutePath()).append("\n\n");
         if (!m.description.isEmpty()) b.append(m.description).append("\n\n");
+        for (String n : m.notes()) b.append(n).append('\n');
         for (String w : m.warnings()) b.append("! ").append(w).append('\n');
         AlertDialog d = Ui.dialog(this).setTitle(m.name).setMessage(b.toString())
                 .setPositiveButton("OK", null).create();
@@ -161,11 +186,11 @@ public class ModsActivity extends Activity {
         it.addCategory(Intent.CATEGORY_OPENABLE);
         it.setType("*/*");
         it.putExtra(Intent.EXTRA_MIME_TYPES, new String[] {"application/zip", "application/x-zip-compressed",
-                                                           "application/octet-stream"});
+                                                           "application/x-7z-compressed", "application/octet-stream"});
         try {
             startActivityForResult(it, PICK_ZIP);
         } catch (Exception e) {
-            Toast.makeText(this, "No file picker on this phone: unzip the mod into OpenSA2/mods yourself.",
+            Toast.makeText(this, "No file picker on this phone: unpack the mod into OpenSA2/mods yourself.",
                            Toast.LENGTH_LONG).show();
         }
     }
@@ -175,11 +200,25 @@ public class ModsActivity extends Activity {
         super.onActivityResult(code, result, data);
         if (code != PICK_ZIP || result != RESULT_OK || data == null || data.getData() == null) return;
         final Uri uri = data.getData();
+        final String name = displayName(uri);
         Toast.makeText(this, "Unpacking...", Toast.LENGTH_SHORT).show();
         new Thread(() -> {
             String msg;
             try {
-                msg = "Added " + unzip(uri);
+                File tmp = File.createTempFile("mod", ".archive", getCacheDir());
+                try (InputStream in = getContentResolver().openInputStream(uri);
+                     OutputStream out = new FileOutputStream(tmp)) {
+                    if (in == null) throw new IOException("the file could not be opened");
+                    byte[] buf = new byte[1 << 16];
+                    int n;
+                    while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+                }
+                try {
+                    List<String> names = ModInstall.install(this, tmp, name, s -> {});
+                    msg = "Added " + String.join(", ", names);
+                } finally {
+                    tmp.delete();
+                }
             } catch (Exception e) {
                 msg = "Could not add the mod: " + (e.getMessage() == null ? e.toString() : e.getMessage());
             }
@@ -191,78 +230,57 @@ public class ModsActivity extends Activity {
         }).start();
     }
 
+    // ------------------------------------------------------------ GameBanana
+
+    private void gameBananaDialog() {
+        EditText e = new EditText(this);
+        e.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        e.setHint("gamebanana.com/mods/12345, a mod id, or a 1-click link");
+        AlertDialog d = Ui.dialog(this).setTitle("Install from GameBanana")
+                .setMessage("Paste a GameBanana mod link or its id. On the mod's page you can also tap "
+                        + "\u201c1-Click Install\u201d and choose OpenSA2. Only .zip and .7z downloads can be "
+                        + "unpacked here (not RAR).")
+                .setView(e)
+                .setPositiveButton("Install", (x, w) -> installFromGameBanana(e.getText().toString()))
+                .setNegativeButton("Cancel", null).create();
+        Ui.style(d);
+        d.show();
+    }
+
+    private void installFromGameBanana(String input) {
+        if (input == null || input.trim().isEmpty()) return;
+        if (!OpenSa2.haveStorage()) {
+            Toast.makeText(this, "Allow file access on the first screen first.", Toast.LENGTH_LONG).show();
+            return;
+        }
+        final TextView log = Ui.text(this, "Starting...", 12, OpenSa2.GOLD);
+        AlertDialog d = Ui.dialog(this).setTitle("GameBanana install").setView(log)
+                .setNegativeButton("Close", null).create();
+        Ui.style(d);
+        d.show();
+        new Thread(() -> {
+            String msg;
+            try {
+                List<String> names = GameBanana.install(this, input,
+                        line -> runOnUiThread(() -> log.append("\n" + line)));
+                msg = "Installed " + String.join(", ", names) + " (switched on)";
+            } catch (Exception e) {
+                msg = "Could not install: " + (e.getMessage() == null ? e.toString() : e.getMessage());
+            }
+            final String m = msg;
+            runOnUiThread(() -> {
+                log.append("\n" + m);
+                load();
+            });
+        }).start();
+    }
+
     private String displayName(Uri uri) {
         String name = null;
         try (Cursor c = getContentResolver().query(uri, new String[] {OpenableColumns.DISPLAY_NAME}, null, null, null)) {
             if (c != null && c.moveToFirst()) name = c.getString(0);
         } catch (Exception ignored) {
         }
-        if (name == null) name = "mod";
-        if (name.toLowerCase().endsWith(".zip")) name = name.substring(0, name.length() - 4);
-        return name.replaceAll("[\\\\/:*?\"<>|]", "_").trim();
-    }
-
-    /** Unpacks into mods/<zip name>/; a ZIP holding one folder with the mod.ini keeps that folder. */
-    private String unzip(Uri uri) throws IOException {
-        String base = displayName(uri);
-        File tmp = new File(OpenSa2.modsDir(), ".unpack-" + System.currentTimeMillis());
-        tmp.mkdirs();
-        String canon = tmp.getCanonicalPath() + File.separator;
-        try (InputStream raw = getContentResolver().openInputStream(uri);
-             ZipInputStream zin = new ZipInputStream(raw)) {
-            if (raw == null) throw new IOException("the file could not be opened");
-            ZipEntry e;
-            byte[] buf = new byte[1 << 16];
-            int entries = 0;
-            while ((e = zin.getNextEntry()) != null) {
-                File out = new File(tmp, e.getName().replace('\\', '/'));
-                if (!out.getCanonicalPath().startsWith(canon)) throw new IOException("bad path in the ZIP: " + e.getName());
-                if (e.isDirectory()) {
-                    out.mkdirs();
-                    continue;
-                }
-                out.getParentFile().mkdirs();
-                try (OutputStream o = new FileOutputStream(out)) {
-                    int n;
-                    while ((n = zin.read(buf)) > 0) o.write(buf, 0, n);
-                }
-                entries++;
-            }
-            if (entries == 0) throw new IOException("not a ZIP, or empty (7z and RAR are not supported: unpack those with a file app)");
-        } catch (IOException ex) {
-            OpenSa2.removeTree(tmp);
-            throw ex;
-        }
-        // Find the mod folder(s): the one holding mod.ini.
-        List<File> found = new ArrayList<>();
-        findMods(tmp, 0, found);
-        if (found.isEmpty()) {
-            OpenSa2.removeTree(tmp);
-            throw new IOException("no mod.ini in the ZIP");
-        }
-        List<String> names = new ArrayList<>();
-        for (File f : found) {
-            String name = f.equals(tmp) ? base : f.getName();
-            File dest = new File(OpenSa2.modsDir(), name);
-            if (dest.exists()) OpenSa2.removeTree(dest);
-            if (!f.renameTo(dest)) throw new IOException("could not move the mod into " + dest);
-            names.add(name);
-        }
-        OpenSa2.removeTree(tmp);
-        Set<String> on = ModManager.enabled(this);
-        on.addAll(names);
-        ModManager.save(this, ModManager.order(this), on);
-        return String.join(", ", names) + " (switched on)";
-    }
-
-    private static void findMods(File dir, int depth, List<File> out) {
-        if (ModManager.child(dir, "mod.ini").isFile()) {
-            out.add(dir);
-            return;
-        }
-        if (depth >= 3) return;
-        File[] kids = dir.listFiles();
-        if (kids == null) return;
-        for (File k : kids) if (k.isDirectory()) findMods(k, depth + 1, out);
+        return ModInstall.safeName(name);
     }
 }

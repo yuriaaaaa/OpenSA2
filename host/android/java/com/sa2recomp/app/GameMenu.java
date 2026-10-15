@@ -174,7 +174,8 @@ final class GameMenu {
         if (e != null) for (String l : e.logLines()) b.append("  ").append(l).append('\n');
         b.append("Touch pad: ").append(Sa2VirtualPad.active() ? "connected" : "not connected")
          .append(Sa2VirtualPad.realControllerConnected() ? " (a controller is connected)" : "").append('\n');
-        String session = OpenSa2.readText(new File(mActivity.getFilesDir(), "last-session.txt"));
+        String session = SessionLogs.publicPaths(mActivity,
+                OpenSa2.readText(new File(mActivity.getFilesDir(), "last-session.txt")));
         if (session != null) {
             String[] lines = session.split("\n");
             b.append("\nThis session (newest last):\n");

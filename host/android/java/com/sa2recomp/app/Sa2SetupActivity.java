@@ -24,8 +24,10 @@ import java.util.List;
  * copied as is); Play writes the config without checking the files' hashes (OpenSa2.writeConfig),
  * puts the enabled mods in place (ModManager.apply), writes the settings the game reads
  * (game.env.extra) and starts the play screen (Sa2Activity). Mods, Codes, Settings and Touch
- * layout open their own screens. When a session ends, its report is shown, and with Debug logs on
- * its logs are copied into Internal storage/OpenSA2/logs/.
+ * layout open their own screens. When a session ends, its report is shown with the reason a
+ * failed one gives, its logs are copied to Internal storage/OpenSA2/logs/<session>/
+ * (SessionLogs) and the game's saves to Internal storage/OpenSA2/saves/ (Saves). This also runs
+ * when the launcher comes back after the system ended its process while the game ran.
  *
  * Intent extras: sa2.stream (and Sa2Activity's other extras) start the play screen's stream mode
  * at once, the renderer's check with no game.
@@ -37,6 +39,7 @@ public class Sa2SetupActivity extends Activity {
     private TextView mStatus, mLog;
     private Button mPlay, mAccess;
     private boolean mBusy, mPlayLaunched;
+    private final StringBuilder mLaunchLog = new StringBuilder();
 
     @Override
     protected void onCreate(Bundle state) {
@@ -65,11 +68,10 @@ public class Sa2SetupActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
-        if (mPlayLaunched) {
-            mPlayLaunched = false;
-            sessionEnded();
-        }
+        boolean justPlayed = mPlayLaunched;
+        mPlayLaunched = false;
         refresh();
+        if (!mBusy) sessionEnded(justPlayed);
     }
 
     // ------------------------------------------------------------ the screen
@@ -155,9 +157,13 @@ public class Sa2SetupActivity extends Activity {
         mBusy = true;
         mPlay.setEnabled(false);
         mLog.setText("");
+        synchronized (mLaunchLog) {
+            mLaunchLog.setLength(0);
+        }
         new Thread(() -> {
             String fail = null;
             try {
+                say("OpenSA2 " + versionName() + ", Play at " + OpenSa2.nowIso());
                 for (String l : OpenSa2.writeConfig(this, root)) say(l);
                 File exe = OpenSa2.exeIn(root);
                 String sha = OpenSa2.sha256(exe);
@@ -165,19 +171,23 @@ public class Sa2SetupActivity extends Activity {
                     say("Note: " + exe.getName() + " is not the 2012 Steam build this port was made for "
                         + "(SHA-256 " + sha + "). If the game stops at once, copy the original Steam sonic2app.exe.");
                 }
+                try {
+                    Saves.importInto(this, this::say);
+                } catch (Exception e) {
+                    say("Could not bring in saves from Internal storage/OpenSA2/saves: " + e.getMessage());
+                }
                 ModManager.apply(this, root, this::say);
                 OpenSa2.writeGameEnv(this);
             } catch (Exception e) {
                 fail = e.getMessage() == null ? e.toString() : e.getMessage();
             }
+            if (fail != null) say("Could not start: " + fail);
+            writeLaunchLog();
             final String f = fail;
             runOnUiThread(() -> {
                 mBusy = false;
                 mPlay.setEnabled(true);
-                if (f != null) {
-                    say("Could not start: " + f);
-                    return;
-                }
+                if (f != null) return;
                 mPlayLaunched = true;
                 startActivity(new Intent(this, Sa2Activity.class));
             });
@@ -185,43 +195,73 @@ public class Sa2SetupActivity extends Activity {
     }
 
     private void say(String line) {
+        synchronized (mLaunchLog) {
+            mLaunchLog.append(line).append('\n');
+        }
         runOnUiThread(() -> mLog.append(line + "\n"));
     }
 
-    /** Shows the session's report; with Debug logs on, copies the session's logs to OpenSA2/logs. */
-    private void sessionEnded() {
-        String last = OpenSa2.readText(new File(getFilesDir(), "last-session.txt"));
-        mLog.setText(last == null ? "" : "The last session:\n" + last);
-        if (!OpenSa2.prefs(this).getBoolean("debug_logs", false) || !OpenSa2.haveStorage()) return;
-        new Thread(() -> {
-            try {
-                File out = new File(OpenSa2.logsDir(), OpenSa2.stamp());
-                out.mkdirs();
-                File report = new File(getFilesDir(), "last-session.txt");
-                if (report.isFile()) OpenSa2.copyFile(report, new File(out, "last-session.txt"));
-                File codes = new File(getFilesDir(), "codes.log");
-                if (codes.isFile()) OpenSa2.copyFile(codes, new File(out, "codes.log"));
-                File[] sessions = new File(getFilesDir(), "sessions").listFiles();
-                File newest = null;
-                if (sessions != null) for (File s : sessions) if (newest == null || s.getName().compareTo(newest.getName()) > 0) newest = s;
-                if (newest != null) copyLogs(newest, new File(out, newest.getName()));
-                say("Logs copied to " + out.getAbsolutePath());
-            } catch (Exception e) {
-                say("Could not copy the logs: " + e.getMessage());
-            }
-        }).start();
+    /** The Play's lines, kept as files/launcher.log for the session's logs folder. */
+    private void writeLaunchLog() {
+        String text;
+        synchronized (mLaunchLog) {
+            text = mLaunchLog.toString();
+        }
+        try {
+            OpenSa2.writeText(new File(getFilesDir(), "launcher.log"), text);
+        } catch (Exception ignored) {
+        }
     }
 
-    private static void copyLogs(File from, File to) throws java.io.IOException {
-        File[] kids = from.listFiles();
-        if (kids == null) return;
-        for (File k : kids) {
-            if (k.isDirectory()) {
-                copyLogs(k, new File(to, k.getName()));
-            } else if (k.isFile() && k.length() < (64L << 20)) {
-                // FIFOs and other special files are skipped by isFile(); huge records are left out.
-                OpenSa2.copyFile(k, new File(to, k.getName()));
-            }
+    private String versionName() {
+        try {
+            return getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+        } catch (Exception e) {
+            return "?";
         }
+    }
+
+    /**
+     * After a session (and whenever the launcher comes back): the saves and logs copied out, and
+     * the newest session's report shown once, with its private paths written as the public ones
+     * and the reason a failed session gives.
+     */
+    private void sessionEnded(boolean justPlayed) {
+        new Thread(() -> {
+            List<String> extra = new java.util.ArrayList<>();
+            if (OpenSa2.haveStorage()) {
+                try {
+                    int n = Saves.export(this);
+                    if (n > 0) extra.add(n + " save(s) copied to Internal storage/OpenSA2/saves");
+                } catch (Exception e) {
+                    extra.add("Could not copy the saves to Internal storage/OpenSA2/saves: " + e.getMessage());
+                }
+            }
+            File out = null;
+            if (SessionLogs.wanted(this)) {
+                try {
+                    out = SessionLogs.export(this);
+                } catch (Exception e) {
+                    extra.add("Could not copy the logs: " + e.getMessage());
+                }
+            }
+            File newest = SessionLogs.newest(this);
+            String last = OpenSa2.readText(new File(getFilesDir(), "last-session.txt"));
+            String shown = OpenSa2.prefs(this).getString("shown_session", "");
+            boolean fresh = newest != null && !newest.getName().equals(shown);
+            if (!justPlayed && !fresh) return;
+            if (newest != null) OpenSa2.prefs(this).edit().putString("shown_session", newest.getName()).apply();
+            StringBuilder b = new StringBuilder();
+            if (last != null) {
+                b.append("The last session:\n").append(SessionLogs.publicPaths(this, last));
+                if (!last.endsWith("\n")) b.append('\n');
+                for (String l : SessionLogs.why(newest, last)) b.append(l).append('\n');
+            }
+            if (out != null) b.append("Logs saved to Internal storage/OpenSA2/logs/").append(out.getName()).append("/\n");
+            else if (!SessionLogs.wanted(this)) b.append("Session logs are not being saved (Settings, Save session logs).\n");
+            for (String l : extra) b.append(l).append('\n');
+            final String text = b.toString();
+            runOnUiThread(() -> mLog.setText(text));
+        }).start();
     }
 }

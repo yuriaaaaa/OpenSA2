@@ -46,7 +46,16 @@
             </intent-filter>
         </activity>
 
-        <activity android:name="com.sa2recomp.app.ModsActivity" android:label="Mods" android:exported="false" />
+        <activity android:name="com.sa2recomp.app.ModsActivity" android:label="Mods"
+            android:exported="true" android:launchMode="singleTask">
+            <!-- GameBanana one-click install: the browser hands over an sa2mm: link. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="sa2mm" />
+            </intent-filter>
+        </activity>
         <activity android:name="com.sa2recomp.app.CodesActivity" android:label="Codes" android:exported="false" />
         <activity android:name="com.sa2recomp.app.SettingsActivity" android:label="Settings" android:exported="false" />
         <activity android:name="com.sa2recomp.app.TouchEditorActivity" android:label="Touch layout"

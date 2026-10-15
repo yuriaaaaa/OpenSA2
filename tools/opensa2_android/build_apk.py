@@ -82,8 +82,8 @@ def main() -> int:
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--icon", type=Path)
     ap.add_argument("--keystore", type=Path)
-    ap.add_argument("--version-name", default="0.1.0-opensa2")
-    ap.add_argument("--version-code", type=int, default=10100)
+    ap.add_argument("--version-name", default="0.1.1-opensa2")
+    ap.add_argument("--version-code", type=int, default=10200)
     a = ap.parse_args()
 
     bt = a.sdk / "build-tools" / BUILD_TOOLS
