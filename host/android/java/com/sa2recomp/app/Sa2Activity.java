@@ -16,8 +16,10 @@ import android.widget.Toast;
 
 import java.io.File;
 import java.util.ArrayList;
+import java.util.List;
 
 import org.libsdl.app.SDLActivity;
+import org.libsdl.app.Sa2VirtualPad;
 
 /**
  * The play screen: SDL's activity running the native session (host/android/native,
@@ -41,6 +43,9 @@ public class Sa2Activity extends SDLActivity {
     private static final long BACK_AGAIN_MS = 2500;
     private boolean mQuitSent;
     private long mLastBack;
+    private TouchControlsView mTouch;
+    private CodeEngine mCodes;
+    private GameMenu mMenu;
 
     @Override
     protected String[] getLibraries() {
@@ -66,11 +71,12 @@ public class Sa2Activity extends SDLActivity {
             a.add("--screen");
             a.add(screen);
         }
-        File ext = getExternalFilesDir(null);
-        if (ext != null) {
-            a.add("--external");
-            a.add(ext.getAbsolutePath());
-        }
+        // OpenSA2: game.env.extra (resolution, HUD and debug settings) comes from the launcher's
+        // settings, written to the app's env folder before this screen starts.
+        File env = OpenSa2.envDir(this);
+        env.mkdirs();
+        a.add("--external");
+        a.add(env.getAbsolutePath());
         Intent it = getIntent();
         if (it != null) {
             String stream = it.getStringExtra(EXTRA_STREAM);
@@ -116,8 +122,24 @@ public class Sa2Activity extends SDLActivity {
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        // The touch pad joins SDL's joysticks at SDL's first poll, before the player lists them.
+        boolean touchOn = OpenSa2.prefs(this).getBoolean("touch_on", true);
+        Sa2VirtualPad.setWanted(touchOn);
+        Sa2VirtualPad.install(present -> runOnUiThread(() -> {
+            if (mTouch != null && present) mTouch.hideForGamepad();
+        }));
         super.onCreate(savedInstanceState);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        if (!mBrokenLibraries && mLayout != null) {
+            mTouch = new TouchControlsView(this);
+            mTouch.setEnabledControls(touchOn);
+            mMenu = new GameMenu(this, mTouch);
+            mTouch.setOnMenu(() -> mMenu.show());
+            mLayout.addView(mTouch, new android.view.ViewGroup.LayoutParams(android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                                                                 android.view.ViewGroup.LayoutParams.MATCH_PARENT));
+            if (Sa2VirtualPad.realControllerConnected()) mTouch.hideForGamepad();
+            startCodes();
+        }
         // The sustained-performance mode holds the clocks to what the device can keep up for
         // hours, below what a frame of the game needs: left off (the native session's header,
         // "Speed on a phone"), whatever else asked for it. The screen stays on.
@@ -143,8 +165,14 @@ public class Sa2Activity extends SDLActivity {
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
         if (event.getKeyCode() == KeyEvent.KEYCODE_BACK && !fromGamepad(event)) {
-            if (event.getAction() == KeyEvent.ACTION_UP) backRequest();
+            if (event.getAction() == KeyEvent.ACTION_UP) {
+                if (mMenu != null) mMenu.show();
+                else backRequest();
+            }
             return true;
+        }
+        if (mTouch != null && fromGamepad(event) && Sa2VirtualPad.looksLikeController(event.getDevice())) {
+            mTouch.hideForGamepad();
         }
         return super.dispatchKeyEvent(event);
     }
@@ -154,10 +182,45 @@ public class Sa2Activity extends SDLActivity {
         backRequest();
     }
 
+    /** Runs the codes switched on (and the active mods' required ones) against the game. */
+    private void startCodes() {
+        List<String> errors = new ArrayList<>();
+        List<CodeList.Code> run = ModManager.codesToRun(this, errors);
+        File log = new File(getFilesDir(), "codes.log");
+        log.delete();
+        mCodes = new CodeEngine(log);
+        mCodes.setCodes(run);
+        for (String e : errors) android.util.Log.w("opensa2-codes", e);
+        if (!run.isEmpty()) mCodes.start();
+    }
+
+    CodeEngine codes() {
+        return mCodes;
+    }
+
+    /** The menu changed which codes are on: reload them (the engine starts if it had none). */
+    void reloadCodes() {
+        List<CodeList.Code> run = ModManager.codesToRun(this, new ArrayList<>());
+        mCodes.setCodes(run);
+        if (!run.isEmpty()) mCodes.start();
+    }
+
+    @Override
+    public boolean dispatchGenericMotionEvent(android.view.MotionEvent ev) {
+        if (mTouch != null && Sa2VirtualPad.looksLikeController(ev.getDevice())) mTouch.hideForGamepad();
+        return super.dispatchGenericMotionEvent(ev);
+    }
+
     private static boolean fromGamepad(KeyEvent event) {
         int s = event.getSource();
         return (s & InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD
                || (s & InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK;
+    }
+
+    /** Ends the session (the game menu's Exit game). */
+    void endGame() {
+        mLastBack = SystemClock.uptimeMillis();
+        backRequest();
     }
 
     private void backRequest() {
@@ -177,6 +240,7 @@ public class Sa2Activity extends SDLActivity {
 
     @Override
     protected void onDestroy() {
+        if (mCodes != null) mCodes.stop();
         super.onDestroy();
         // The native session's state (the player's statics, SDL's) ends with this process.
         System.exit(0);

@@ -15,6 +15,13 @@
     <uses-feature android:name="android.hardware.type.pc" android:required="false" />
 
     <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- OpenSA2: the game, mods and logs live in Internal storage/OpenSA2/ (shared storage, where
+         file managers can copy to it), which needs all-files access on Android 11 and later. -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
+    <!-- The Codes screen downloads the mod loader's code list. -->
+    <uses-permission android:name="android.permission.INTERNET" />
 
     <application
         android:label="@string/app_name"
@@ -25,9 +32,10 @@
         android:appCategory="game"
         android:isGame="true"
         android:theme="@style/SetupTheme"
+        android:requestLegacyExternalStorage="true"
         android:hardwareAccelerated="true">
 
-        <activity android:name=".Sa2SetupActivity"
+        <activity android:name="com.sa2recomp.app.Sa2SetupActivity"
             android:label="@string/app_name"
             android:exported="true"
             android:launchMode="singleTask"
@@ -38,7 +46,14 @@
             </intent-filter>
         </activity>
 
-        <activity android:name=".Sa2Activity"
+        <activity android:name="com.sa2recomp.app.ModsActivity" android:label="Mods" android:exported="false" />
+        <activity android:name="com.sa2recomp.app.CodesActivity" android:label="Codes" android:exported="false" />
+        <activity android:name="com.sa2recomp.app.SettingsActivity" android:label="Settings" android:exported="false" />
+        <activity android:name="com.sa2recomp.app.TouchEditorActivity" android:label="Touch layout"
+            android:exported="false" android:screenOrientation="sensorLandscape"
+            android:theme="@style/PlayTheme" />
+
+        <activity android:name="com.sa2recomp.app.Sa2Activity"
             android:label="@string/app_name"
             android:process=":play"
             android:launchMode="singleTask"
