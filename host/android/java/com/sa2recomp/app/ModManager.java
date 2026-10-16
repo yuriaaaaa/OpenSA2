@@ -476,15 +476,15 @@ final class ModManager {
     }
 
     /** A model folder's <name>.prs, built into files/modbuild/<mod>/ when its files changed. */
-    private static File builtModel(File filesDir, Mod m, File folder, Progress p) {
+    private static File builtModel(File filesDir, Mod m, File folder, File gamePrs, Progress p) {
         File dir = new File(new File(filesDir, "modbuild"), m.folder.replaceAll("[^A-Za-z0-9._-]", "_"));
         File prs = new File(dir, folder.getName() + ".prs");
         File sig = new File(dir, folder.getName() + ".sig");
-        String want = ModelFolder.signature(folder);
+        String want = ModelFolder.signature(folder) + (gamePrs != null && gamePrs.isFile() ? "|game " + gamePrs.length() : "");
         if (prs.isFile() && want.equals(OpenSa2.readText(sig))) return prs;
         try {
             p.line("Building " + folder.getName() + ".prs from " + m.name + "'s " + folder.getName() + " folder...");
-            ModelFolder.Result r = ModelFolder.buildPrs(folder, prs);
+            ModelFolder.Result r = ModelFolder.buildPrs(folder, prs, gamePrs);
             OpenSa2.writeText(sig, want);
             p.line("Built " + folder.getName() + ".prs: " + ModelFolder.describe(r));
             return prs;
@@ -531,7 +531,8 @@ final class ModManager {
                 walk(gd, "resource/gd_PC", mine, mySpell, new HashSet<>(models));
                 // A model folder wins over the same mod's own .prs of that name, as in the loader.
                 for (File md : models) {
-                    File built = builtModel(filesDir, m, md, p);
+                    File built = builtModel(filesDir, m, md,
+                            OpenSa2.resolveCase(readRoot, "resource/gd_PC/" + md.getName() + ".prs"), p);
                     if (built == null) continue;
                     String rel = "resource/gd_PC/" + md.getName() + ".prs";
                     String key = rel.toLowerCase(Locale.ROOT);

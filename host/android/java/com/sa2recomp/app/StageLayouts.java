@@ -69,8 +69,9 @@ final class StageLayouts {
 
     /** After the mods are applied: stages each layout pair and writes the helper's L lines. */
     static void afterApply(Context c, File readRoot, ModManager.Progress p) {
-        if (!OpenSa2.prefs(c).getBoolean(NativePatch.RANDOM_PREF, false)
-            || !OpenSa2.prefs(c).getBoolean(NativePatch.RANDOM_ANY_PREF, false)) return;
+        boolean randomAny = OpenSa2.prefs(c).getBoolean(NativePatch.RANDOM_PREF, false)
+                            && OpenSa2.prefs(c).getBoolean(NativePatch.RANDOM_ANY_PREF, false);
+        if (!randomAny && !NativePatch.crossStyle(c)) return;
         File src = source(c);
         if (src == null) {
             p.line("Walkers in speed stages: no stage layouts for them (the SA2 Randomizer mod has them; "

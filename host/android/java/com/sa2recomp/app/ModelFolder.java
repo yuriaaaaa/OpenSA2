@@ -74,7 +74,7 @@ final class ModelFolder {
 
     static final class Result {
         byte[] mdl;                                        // uncompressed, big-endian
-        int indices, placed, files, objects, chunkModels;
+        int indices, placed, files, objects, chunkModels, fromGame;
         final List<String> notes = new ArrayList<>();
     }
 
@@ -88,6 +88,17 @@ final class ModelFolder {
     }
 
     static Result build(File dir) throws IOException {
+        return build(dir, null);
+    }
+
+    /**
+     * build(), and with `game` (the game's own model file, decompressed MDL) each index the folder
+     * does not give is taken from the game's file, as the game's file had it. The loader leaves such
+     * an index empty, which a mod that drops a model the game draws (Nazo's sonicmdl.ini names
+     * labels for the upgrades, 13, 14 and 25-27, that none of its files has) makes a null model the
+     * game then draws; the game's own model is the safer stand-in.
+     */
+    static Result build(File dir, byte[] game) throws IOException {
         Result r = new Result();
         File ini = ini(dir);
         if (ini == null) throw new IOException("no " + dir.getName() + ".ini in " + dir.getName() + "/");
@@ -134,13 +145,34 @@ final class ModelFolder {
         }
         r.placed = entries.size();
 
-        // Layout: the table, then each file's model data at a 16-byte boundary.
-        int size = align16((entries.size() + 1) * 8);
+        // The game's entries for the indices the folder leaves out.
+        List<int[]> fromGame = new ArrayList<>();          // {index, offset in the game's file}
+        if (game != null) {
+            Set<Integer> have = new HashSet<>();
+            for (int[] e : entries) have.add(e[0]);
+            for (int t = 0; t + 8 <= game.length; t += 8) {
+                int idx = be32(game, t), off = be32(game, t + 4);
+                if (idx == -1) break;
+                if (have.contains(idx) || off <= 0 || off >= game.length) continue;
+                fromGame.add(new int[] {idx, off});
+            }
+        }
+
+        // Layout: the table, then each file's model data at a 16-byte boundary, then the game's file.
+        int size = align16((entries.size() + fromGame.size() + 1) * 8);
         for (Source s : sources) {
             s.base = size;
             size = align16(size + (s.end - HEADER));
         }
+        int gameBase = size;
+        if (!fromGame.isEmpty()) size = align16(size + game.length);
         byte[] out = new byte[size];
+        if (!fromGame.isEmpty()) {
+            System.arraycopy(game, 0, out, gameBase, game.length);
+            GameWalk gw = new GameWalk(game, out, gameBase);
+            for (int[] e : fromGame) gw.object(e[1]);
+            r.fromGame = fromGame.size();
+        }
         for (Source s : sources) System.arraycopy(s.b, HEADER, out, s.base, s.end - HEADER);
 
         BitSet swapped = new BitSet(size);
@@ -158,6 +190,11 @@ final class ModelFolder {
         for (int[] e : entries) {
             putBe32(out, at, e[0]);
             putBe32(out, at + 4, sources.get(e[1]).base + e[2] - HEADER);
+            at += 8;
+        }
+        for (int[] e : fromGame) {
+            putBe32(out, at, e[0]);
+            putBe32(out, at + 4, gameBase + e[1]);
             at += 8;
         }
         putBe32(out, at, -1);
@@ -337,7 +374,53 @@ final class ModelFolder {
         }
     }
 
+    /** The game's big-endian MDL copied whole at `base`: the pointers of what the taken indices
+     * reach (objects' model, child and sibling; chunk models' vertex and poly lists) moved by base. */
+    private static final class GameWalk {
+        final byte[] g, out;
+        final int base;
+        final Set<Integer> objects = new HashSet<>(), models = new HashSet<>();
+
+        GameWalk(byte[] g, byte[] out, int base) {
+            this.g = g;
+            this.out = out;
+            this.base = base;
+        }
+
+        boolean ok(int o, int n) {
+            return o > 0 && (long) o + n <= g.length;
+        }
+
+        void move(int word) {
+            int v = be32(g, word);
+            if (v != 0) putBe32(out, base + word, base + v);
+        }
+
+        void object(int root) {
+            ArrayDeque<Integer> todo = new ArrayDeque<>();
+            todo.push(root);
+            while (!todo.isEmpty()) {
+                int o = todo.pop();
+                if (!ok(o, OBJECT_SIZE) || !objects.add(o)) continue;
+                int model = be32(g, o + 4), child = be32(g, o + 0x2C), sibling = be32(g, o + 0x30);
+                move(o + 4);
+                move(o + 0x2C);
+                move(o + 0x30);
+                if (model != 0 && ok(model, CHUNK_MODEL_SIZE) && models.add(model)) {
+                    move(model);
+                    move(model + 4);
+                }
+                if (child != 0) todo.push(child);
+                if (sibling != 0) todo.push(sibling);
+            }
+        }
+    }
+
     // ------------------------------------------------------------ bytes
+
+    static int be32(byte[] b, int o) {
+        return ((b[o] & 0xFF) << 24) | ((b[o + 1] & 0xFF) << 16) | ((b[o + 2] & 0xFF) << 8) | (b[o + 3] & 0xFF);
+    }
 
     static int le16(byte[] b, int o) {
         return (b[o] & 0xFF) | ((b[o + 1] & 0xFF) << 8);
@@ -360,13 +443,28 @@ final class ModelFolder {
 
     /** Builds the folder and writes `<name>.prs` (compressed) to `out`. */
     static Result buildPrs(File dir, File out) throws IOException {
-        Result r = build(dir);
+        return buildPrs(dir, out, null);
+    }
+
+    /** buildPrs() with the game's own model file (`game`, PRS-compressed, or null) filling the
+     * indices the folder leaves out. */
+    static Result buildPrs(File dir, File out, File game) throws IOException {
+        byte[] g = null;
+        if (game != null && game.isFile()) {
+            try {
+                g = Prs.decompress(java.nio.file.Files.readAllBytes(game.toPath()));
+            } catch (IOException | RuntimeException e) {
+                g = null;
+            }
+        }
+        Result r = build(dir, g);
         OpenSa2.writeBytes(out, Prs.compress(r.mdl));
         return r;
     }
 
     static String describe(Result r) {
         return r.placed + " of " + r.indices + " models from " + r.files + " file(s)"
+                + (r.fromGame > 0 ? ", " + r.fromGame + " more kept from the game's file" : "")
                 + (r.notes.isEmpty() ? "" : "; " + String.join("; ", r.notes.subList(0, Math.min(3, r.notes.size())))
                 + (r.notes.size() > 3 ? " (" + (r.notes.size() - 3) + " more)" : ""));
     }

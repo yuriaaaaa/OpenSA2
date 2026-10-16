@@ -87,6 +87,9 @@
  * lines give a speed stage a walker's layout (class 2) when a walker is to play it.
  * Kind 14 lets a function run only in the levels of `H <level>` lines, elsewhere returning at once
  * through the lifted bare ret, `J <off> <guest va>` (fourth field 1: with EAX 0).
+ * Kind 15 trades two texture lists for a call while a player is a CharID2 (`S <set> <CharID2> <va>
+ * <va>`); kind 16 writes a 16-bit field after a call (`Q <off> <field> <value>`, the fourth field
+ * the State offset of the register holding the structure).
  */
 #include <stddef.h>
 #include <stdint.h>
@@ -113,7 +116,7 @@
 #define MAP_ANONYMOUS 0x20
 
 #define MAX_PATCHES 64
-#define MAX_WRAPS 24
+#define MAX_WRAPS 48
 #define MAX_VARS 8
 #define MAX_CHARS 32
 #define PLAN_MAX (256 * 1024)
@@ -303,9 +306,10 @@ typedef struct {
     uint32_t preg, kind;    /* kinds 0-2: position tables (preg: the player's register);
                                3: laid out at an aspect; 4-8: logged (above) */
     int early, late, said;  /* lines left as the screen opens and later; said "enter" */
+    uint64_t from;          /* the wrapped function's offset (kind 16's Q lines) */
 } wrap_t;
 
-enum { WRAP_LAYOUT = 3, WRAP_TRACE = 4, WRAP_SPRITE = 5, WRAP_DISPATCH = 6, WRAP_PTR = 7, WRAP_GATE = 8, WRAP_FILL = 9, WRAP_RANDOM = 10, WRAP_MOVES = 11, WRAP_RESTART = 12, WRAP_SETLOAD = 13, WRAP_LEVELGATE = 14 };
+enum { WRAP_LAYOUT = 3, WRAP_TRACE = 4, WRAP_SPRITE = 5, WRAP_DISPATCH = 6, WRAP_PTR = 7, WRAP_GATE = 8, WRAP_FILL = 9, WRAP_RANDOM = 10, WRAP_MOVES = 11, WRAP_RESTART = 12, WRAP_SETLOAD = 13, WRAP_LEVELGATE = 14, WRAP_TEXSWAP = 15, WRAP_POSTSTORE = 16 };
 #define TRACE_EARLY 16
 #define TRACE_LATE 48
 #define TRACE_LATER_MS 4000
@@ -367,6 +371,16 @@ static uint32_t g_hlevel[MAX_HLEVELS];
 static int g_nhlevel;
 static uint64_t g_ret_off;
 static uint32_t g_ret_va;
+/* Kind 15: two NJS_TEXLISTs swapped for the length of a call when a player is a CharID2
+ * (S lines: set, CharID2, texlist, texlist). Kind 16: a 16-bit field written after the call at
+ * a register's address (Q lines: the wrapped function's offset, field offset, value). */
+#define MAX_SWAPS 8
+static uint32_t g_sw_set[MAX_SWAPS], g_sw_id[MAX_SWAPS], g_sw_a[MAX_SWAPS], g_sw_b[MAX_SWAPS];
+static int g_nsw;
+#define MAX_POST 8
+static uint64_t g_q_from[MAX_POST];
+static uint32_t g_q_field[MAX_POST], g_q_value[MAX_POST];
+static int g_nq;
 /* Kind 11: CharObj2Base.CharID2 values read as another for the length of a call (M lines). */
 #define MAX_MOVES 8
 static uint32_t g_cid2_off;
@@ -425,7 +439,7 @@ static void parse_plan(const char *p) {
                 if (!parse_hex(&s, &r->to) || !parse_hex(&s, &r->to_va)) continue;
             } else {
                 if (!parse_hex(&s, &r->wrap_kind) || !parse_hex(&s, &r->preg)) continue;
-                if (r->wrap_kind > WRAP_LEVELGATE) continue;
+                if (r->wrap_kind > WRAP_POSTSTORE) continue;
                 if (r->wrap_kind == WRAP_PTR ? (r->preg > 0x1FFF || (r->preg & 0xFFF) > 0x9F0) : r->preg > 0x9F0) continue;
                 if ((r->wrap_kind <= 2 || (r->wrap_kind == WRAP_PTR && (r->preg & 0xFFF) >= 0x800)) && (r->preg & 3)) continue;
             }
@@ -485,6 +499,21 @@ static void parse_plan(const char *p) {
                     g_ly_class[g_nly] = (uint32_t)b;
                     g_nly++;
                 }
+            }
+        } else if (t == 'S') {
+            if (parse_hex(&s, &a) && parse_hex(&s, &b) && parse_hex(&s, &c) && parse_hex(&s, &d) && g_nsw < MAX_SWAPS) {
+                g_sw_set[g_nsw] = (uint32_t)a;
+                g_sw_id[g_nsw] = (uint32_t)b;
+                g_sw_a[g_nsw] = (uint32_t)c;
+                g_sw_b[g_nsw] = (uint32_t)d;
+                g_nsw++;
+            }
+        } else if (t == 'Q') {
+            if (parse_hex(&s, &a) && parse_hex(&s, &b) && parse_hex(&s, &c) && g_nq < MAX_POST) {
+                g_q_from[g_nq] = a;
+                g_q_field[g_nq] = (uint32_t)b;
+                g_q_value[g_nq] = (uint32_t)c;
+                g_nq++;
             }
         } else if (t == 'H') {
             if (parse_hex(&s, &a) && g_nhlevel < MAX_HLEVELS) g_hlevel[g_nhlevel++] = (uint32_t)a;
@@ -1078,12 +1107,43 @@ static int copy_file(const char *src, const char *dst) {
 }
 static void *wrap_setload(wrap_t *w, void *state, uint32_t pc, void *memory) {
     uint8_t *g = guest();
-    if (!g || !g_guest_size || !g_level_va || !g_ok(g_level_va, 2) || !g_nly || g_grp_n[0] <= 1)
+    if (!g || !g_guest_size || !g_level_va || !g_ok(g_level_va, 2) || !g_nly)
         return w->orig(state, pc, memory);
     uint32_t level = g_rd16(g, g_level_va);
     int any = 0;
     for (int i = 0; i < g_nly; i++) any |= g_ly_level[i] == level;
     if (!any) return w->orig(state, pc, memory);
+    if (g_grp_n[0] <= 1) {
+        /* No random pick: a chosen swap. The characters load before the layout, so the class is
+         * the loaded player's (CharID 4 and 5 hunters, 6 and 7 walkers). */
+        uint32_t cls = 0, id = 0xFF;
+        if (g_co2_va && g_ok(g_co2_va, 4)) {
+            uint32_t co2 = g_rd32(g, g_co2_va);
+            if (co2 && g_ok(co2 + g_charid_off, 1)) id = g[co2 + g_charid_off];
+        }
+        if (id == 4 || id == 5) cls = 1;
+        else if (id == 6 || id == 7) cls = 2;
+        int done = 0, wanted = 0;
+        for (int i = 0; i < g_nly; i++) {
+            if (g_ly_level[i] != level || g_ly_class[i] != cls) continue;
+            wanted++;
+            done += copy_file(g_ly_src[i], g_ly_dst[i]);
+        }
+        begin();
+        put("layout: stage ");
+        put_hex(level);
+        put(" set out for CharID ");
+        put_hex(id);
+        put(" (class ");
+        put_dec(cls);
+        put(", ");
+        put_dec((uint64_t)done);
+        put(" of ");
+        put_dec((uint64_t)wanted);
+        put(" file(s))");
+        end();
+        return w->orig(state, pc, memory);
+    }
     int k;
     if (g_load_k >= 0 && g_load_level == level) {
         k = g_load_k;   /* a second layout file of the same load */
@@ -1142,6 +1202,55 @@ static void *wrap_levelgate(wrap_t *w, void *state, uint32_t pc, void *memory) {
     return ((lifted_fn)(g_base + g_ret_off))(state, g_ret_va, memory);
 }
 
+/* Kind 15: the spin dash's particles (LightAttackChargingParticle and LightAttackParticle) take
+ * Sonic's effect texture list for CharID 0 and Shadow's otherwise; Amy (CharID 0) and Metal Sonic
+ * (CharID 1) have their own loaded instead, so the particles drew from a list with no textures.
+ * While such a function runs and a player is the S line's CharID2, the two lists trade places
+ * (MainMemory's SA2-Amy-Metal-SpinDash picks the list by CharID2 there instead). */
+static void swap8(uint8_t *g, uint32_t a, uint32_t b) {
+    for (int i = 0; i < 8; i++) {
+        uint8_t t = g[a + i];
+        g[a + i] = g[b + i];
+        g[b + i] = t;
+    }
+}
+static void *wrap_texswap(wrap_t *w, void *state, uint32_t pc, void *memory) {
+    uint8_t *g = guest();
+    if (!g || !g_guest_size || !g_co2_va) return w->orig(state, pc, memory);
+    int done[MAX_SWAPS];
+    for (int k = 0; k < g_nsw; k++) {
+        done[k] = 0;
+        if (g_sw_set[k] != (w->preg & 15) || !g_ok(g_sw_a[k], 8) || !g_ok(g_sw_b[k], 8)) continue;
+        for (int p = 0; p < 2 && !done[k]; p++) {
+            if (!g_ok(g_co2_va + 4 * p, 4)) continue;
+            uint32_t co2 = g_rd32(g, g_co2_va + 4 * p);
+            if (co2 && g_ok(co2 + g_cid2_off, 1) && g[co2 + g_cid2_off] == g_sw_id[k]) done[k] = 1;
+        }
+        if (done[k]) swap8(g, g_sw_a[k], g_sw_b[k]);
+    }
+    void *r = w->orig(state, pc, memory);
+    for (int k = g_nsw - 1; k >= 0; k--)
+        if (done[k]) swap8(g, g_sw_a[k], g_sw_b[k]);
+    return r;
+}
+
+/* Kind 16: after the call, a 16-bit value at a field of the structure a register (fourth field: its
+ * State offset; the register is callee-saved, so still the caller's) points to. */
+static void *wrap_poststore(wrap_t *w, void *state, uint32_t pc, void *memory) {
+    void *r = w->orig(state, pc, memory);
+    uint8_t *g = guest();
+    if (!g || !g_guest_size) return r;
+    uint32_t at = *(uint32_t *)((uint8_t *)state + w->preg);
+    for (int k = 0; k < g_nq; k++) {
+        if (g_q_from[k] != w->from) continue;
+        if (at && g_ok(at + g_q_field[k], 2)) {
+            g[at + g_q_field[k]] = (uint8_t)g_q_value[k];
+            g[at + g_q_field[k] + 1] = (uint8_t)(g_q_value[k] >> 8);
+        }
+    }
+    return r;
+}
+
 /* ------------------------------------------------------------------ every wrapper's entry */
 
 static void *wrap_common(int slot, void *state, uint32_t pc, void *memory) {
@@ -1158,6 +1267,8 @@ static void *wrap_common(int slot, void *state, uint32_t pc, void *memory) {
     case WRAP_RESTART: return wrap_restart(w, state, pc, memory);
     case WRAP_SETLOAD: return wrap_setload(w, state, pc, memory);
     case WRAP_LEVELGATE: return wrap_levelgate(w, state, pc, memory);
+    case WRAP_TEXSWAP: return wrap_texswap(w, state, pc, memory);
+    case WRAP_POSTSTORE: return wrap_poststore(w, state, pc, memory);
     default: break;
     }
     uint8_t *g = guest();
@@ -1197,9 +1308,14 @@ static void *wrap_common(int slot, void *state, uint32_t pc, void *memory) {
 WRAP_FN(0) WRAP_FN(1) WRAP_FN(2) WRAP_FN(3) WRAP_FN(4) WRAP_FN(5) WRAP_FN(6) WRAP_FN(7)
 WRAP_FN(8) WRAP_FN(9) WRAP_FN(10) WRAP_FN(11) WRAP_FN(12) WRAP_FN(13) WRAP_FN(14) WRAP_FN(15)
 WRAP_FN(16) WRAP_FN(17) WRAP_FN(18) WRAP_FN(19) WRAP_FN(20) WRAP_FN(21) WRAP_FN(22) WRAP_FN(23)
+WRAP_FN(24) WRAP_FN(25) WRAP_FN(26) WRAP_FN(27) WRAP_FN(28) WRAP_FN(29) WRAP_FN(30) WRAP_FN(31) 
+WRAP_FN(32) WRAP_FN(33) WRAP_FN(34) WRAP_FN(35) WRAP_FN(36) WRAP_FN(37) WRAP_FN(38) WRAP_FN(39) 
+WRAP_FN(40) WRAP_FN(41) WRAP_FN(42) WRAP_FN(43) WRAP_FN(44) WRAP_FN(45) WRAP_FN(46) WRAP_FN(47)
 static lifted_fn const g_wrap_fn[MAX_WRAPS] = {
     wrap0,  wrap1,  wrap2,  wrap3,  wrap4,  wrap5,  wrap6,  wrap7,  wrap8,  wrap9,  wrap10, wrap11,
-    wrap12, wrap13, wrap14, wrap15, wrap16, wrap17, wrap18, wrap19, wrap20, wrap21, wrap22, wrap23};
+    wrap12, wrap13, wrap14, wrap15, wrap16, wrap17, wrap18, wrap19, wrap20, wrap21, wrap22, wrap23,
+    wrap24, wrap25, wrap26, wrap27, wrap28, wrap29, wrap30, wrap31, wrap32, wrap33, wrap34, wrap35,
+    wrap36, wrap37, wrap38, wrap39, wrap40, wrap41, wrap42, wrap43, wrap44, wrap45, wrap46, wrap47};
 
 /* ------------------------------------------------------------------ the process */
 
@@ -1390,6 +1506,8 @@ static void apply(uintptr_t base, uint64_t psize) {
             else if (r->wrap_kind == WRAP_RESTART) known = known && g_level_va && g_reload_off;
             else if (r->wrap_kind == WRAP_SETLOAD) known = known && g_level_va && g_nly;
             else if (r->wrap_kind == WRAP_LEVELGATE) known = known && g_level_va && g_ret_off && g_nhlevel;
+            else if (r->wrap_kind == WRAP_TEXSWAP) known = known && g_co2_va && g_nsw;
+            else if (r->wrap_kind == WRAP_POSTSTORE) known = known && g_nq;
             if (r->wrap_kind == WRAP_RANDOM) {
                 uint32_t grp = (uint32_t)r->preg & 3, va = 0;
                 for (int z = 0; z < g_nz; z++)
@@ -1427,6 +1545,7 @@ static void apply(uintptr_t base, uint64_t psize) {
             w->orig = (lifted_fn)tramp[i];
             w->preg = (uint32_t)r->preg;
             w->kind = (uint32_t)r->wrap_kind;
+            w->from = r->from;
             w->early = TRACE_EARLY;
             w->late = TRACE_LATE;
             emit_jump(&e, (uint64_t)g_wrap_fn[g_nwrap]);

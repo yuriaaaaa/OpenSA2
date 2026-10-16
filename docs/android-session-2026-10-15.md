@@ -511,3 +511,25 @@ Sonikko's light blue; which texture or model that is was not found yet (asked fo
 - On the phone (0.1.13): Knuckles and Rouge play City Escape with the level gates (the black
   screen is gone). Tikal and Chaos, which gave the same black screen in 0.1.8, are back in the
   speed group (every hunter and walker member but the Dark Chao Walker carries bit 2).
+
+# Fifteenth session (2026-10-16): 0.1.15
+
+- Amy's Spin Dash again, following MainMemory's SA2-Amy-Metal-SpinDash (the user's link; its
+  source: nop at 0x723E1F, WriteData<2>(0x72386C, 2), and the spin dash particles' texture list
+  chosen by CharID2 at 0x757BB2 and 0x757D52). The lifted particle code (sub_757b30) reads CharID
+  (offset 1): 0 gives SonEff (0xA08B94), anything else ShadEff (0xA08D94); Amy is CharID 0 with
+  AmyEff (0xA08F94) loaded, so SonEff had no textures, which is the 0.1.7 crash. Now: kind 11 set 0
+  on the spin dash chunk only (not Sonic_Somersault), kind 15 (S lines) trading SonEff/AmyEff and
+  ShadEff/MetEff while Amy or Metal Sonic plays, around 0x757B30 and 0x757CD0, and kind 16 (Q line)
+  writing 2 to EDI+0x36A after 0x723851 (lifted: write16 [edi+0x36A], 0). MAX_WRAPS 24 -> 48.
+- Characters: every character in every slot's picker (testing), Super Sonic (0x49A950, CharID 9)
+  and Super Shadow (0x49ABB0, CharID 10) added (void loaders; LoadSonic's stack argument is left
+  for the caller). Chosen cross-style swaps get the hunters' level gates, the stage layouts (the
+  setload wrapper takes the class from MainCharObj2[0]'s CharID when there is no random group) and
+  the C line. Tails and Eggman on foot are not offered (their loaders take the player in EAX).
+- The user's "Nazo & Seelkadoom" mod crashed after the stage select. Its sonicmdl.ini names the
+  upgrade models (13, 14, 25-27) by labels none of its files has; the loader (LoadMDLFile_ri) and
+  ModelFolder both leave them out. ModelFolder now takes the game's model file and keeps the game's
+  model for such indices (the game's big-endian MDL appended whole, the reached objects' and chunk
+  models' pointers moved). For the user, a Nazo-only repack without the Seelkadoom files, the event
+  AFS and the edited plcommtn.prs, with the stage map's Shadow portrait put back (not committed).

@@ -697,6 +697,50 @@ def levelgate_checks(game, patch, check):
     uc.hook_del(h)
 
 
+def spindash_checks(game, patch, check):
+    """Kind 15 (texture lists traded while Amy plays) and kind 16 (a 16-bit field written after the
+    call at EDI's structure), each around the ret function sub_7f4700."""
+    sym = game.syms
+    fb, _ = sym["sa2_guest_fast_base"]
+    fn, fsize = sym["sub_7f4700"]
+    f16 = game.b[game.vaddr_to_off(fn):game.vaddr_to_off(fn) + 16].hex()
+    for kind in (15, 16):
+        lines = ["opensa2-patch 1", f"G {fb:x} 20000000", "C 1934b70 1de9600 1 5b", "M 3 8 0 0",
+                 "S 0 8 a08b94 a08f94", f"Q {fn:x} 36a 2"]
+        lines.append(f"W {fn:x} {fsize:x} {kind:x} {0 if kind == 15 else 0x8f8:x} {f16} k{kind}")
+        uc, sc = boot(game, patch, ("\n".join(lines) + "\n").encode())
+        check("1 of 1 patch(es) applied" in sc.err.decode(), f"kind {kind}: the wrapper applied")
+        gb = guest_base_var(uc, game)
+        uc.mem_write(gb, struct.pack("<Q", GUEST))
+        for a in (0xA08000, 0x1DE9000, 0x1000000, 0x1F0000):
+            try:
+                uc.mem_map(GUEST + a, 0x10000 if a == 0x1F0000 else 0x2000, UC_PROT_READ | UC_PROT_WRITE)
+            except UcError:
+                pass
+        seen = []
+
+        def at(u, a, size, d):
+            seen.append(bytes(u.mem_read(GUEST + 0xA08B94, 8)))
+        h = uc.hook_add(UC_HOOK_CODE, at, begin=GAME_BASE + fn + 16, end=GAME_BASE + fn + 16)
+        uc.mem_write(GUEST + 0xA08B94, b"SONICEFF")
+        uc.mem_write(GUEST + 0xA08F94, b"AMY__EFF")
+        uc.mem_write(GUEST + 0x1DE9600, struct.pack("<II", 0x1000000, 0))
+        uc.mem_write(GUEST + 0x1000000, bytes([0, 0, 0, 8]) + bytes(0x400))
+        uc.mem_write(GUEST + 0x1F8000, struct.pack("<I", 0x668227))
+        st = bytearray(0x1000)
+        struct.pack_into("<I", st, 0x908, 0x1F8000)
+        struct.pack_into("<I", st, 0x8F8, 0x1000000)
+        uc.mem_write(STATE, bytes(st))
+        run_function(uc, GAME_BASE + fn, STATE, 0x7F4700, 0, limit=100000)
+        if kind == 15:
+            check(seen and seen[0] == b"AMY__EFF" and bytes(uc.mem_read(GUEST + 0xA08B94, 8)) == b"SONICEFF",
+                  "kind 15: Amy's effect list stands in for Sonic's during the call, and is put back")
+        else:
+            check(u32(bytes(uc.mem_read(GUEST + 0x100036A, 4)), 0) & 0xFFFF == 2,
+                  "kind 16: field 0x36A of EDI's structure is 2 after the call")
+        uc.hook_del(h)
+
+
 def layout_checks(game, patch, check):
     """Kind 3 (laid out at 16:9) around sub_86eac0, which calls the ret function sub_6fe430,
     itself traced (kind 4): inside, HorizontalResolution reads 1920 for a 2340x1080 screen and the
@@ -1155,6 +1199,7 @@ def main():
     restart_checks(game, patch, check)
     setload_checks(game, patch, check)
     levelgate_checks(game, patch, check)
+    spindash_checks(game, patch, check)
     print("ALL PASS" if ok else "SOME FAILED")
     return 0 if ok else 1
 

@@ -27,7 +27,7 @@ public class CharactersActivity extends Activity {
         super.onCreate(state);
         p = OpenSa2.prefs(this);
         LinearLayout col = Ui.screen(this, "Characters");
-        col.addView(Ui.text(this, "Play a character's stages as someone else with the same play style. Applies from "
+        col.addView(Ui.text(this, "Play a character's stages as anyone else (for testing, every character is offered for every slot). Applies from "
                 + "the next Play, everywhere that character is loaded (story, stage select, 2P and the Chao World). "
                 + "Experimental: voices and some sounds may stay the original character's, and a stage may expect an "
                 + "upgrade the stand-in does not have.", 13, 0xFFA8B4C8));
@@ -45,6 +45,9 @@ public class CharactersActivity extends Activity {
                 on -> p.edit().putBoolean(NativePatch.RANDOM_ANY_PREF, on).apply()));
         col.addView(Ui.text(this, "Random picks again each time a stage loads, and when you restart it or die before reaching a "
                 + "checkpoint; once you have touched a checkpoint, the same character carries on.", 12, 0xFFA8B4C8));
+        col.addView(Ui.check(this, "Amy and Metal Sonic can Spin Dash (MainMemory's SA2-Amy-Metal-SpinDash, done natively; "
+                + "experimental)", p.getBoolean(NativePatch.MOVES_PREF, true),
+                on -> p.edit().putBoolean(NativePatch.MOVES_PREF, on).apply()));
         String[] heads = {"Speed stages", null, "Treasure hunting", null, "Walker shooting", null};
         for (int i = 0; i < NativePatch.SLOTS.length; i++) {
             if (heads[i] != null) col.addView(Ui.heading(this, heads[i]));
@@ -75,7 +78,10 @@ public class CharactersActivity extends Activity {
 
     private void pick(int at) {
         NativePatch.Chara from = NativePatch.chara(NativePatch.SLOTS[at]);
-        List<NativePatch.Chara> g = NativePatch.group(from.group);
+        // Every character for every slot (for finding out what works where).
+        List<NativePatch.Chara> g = new java.util.ArrayList<>(java.util.Arrays.asList(NativePatch.CHARAS));
+        g.remove(from);
+        g.add(0, from);
         String cur = NativePatch.swaps(this).get(from.key);
         String[] names = new String[g.size()];
         int sel = 0;

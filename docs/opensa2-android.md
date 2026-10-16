@@ -34,7 +34,10 @@ folders and `[ReplaceFiles]` into the app's own storage; the game folder is neve
 (`gd_PC/sonicmdl/` with `sonicmdl.ini` and `*.sa2mdl` files, the sa2-mod-loader `LoadMDLFile`
 feature) is built into the single model file the game reads (`sonicmdl.prs`, big-endian,
 PRS-compressed) at Play, because the recompiled game has no loader to assemble the folder itself.
-The build is cached in the app's storage and redone only when the folder's files change.
+The build is cached in the app's storage and redone only when the folder's files change. When the game's own model file is there, an index the folder's ini names but no file in the
+folder holds (Nazo's sonicmdl.ini names the upgrades, 13, 14 and 25-27, with labels none of its
+files has) keeps the game's model, copied with its pointers moved, instead of being left empty for
+the game to draw as nothing.
 
 **Texture archives.** When a mod replaces a `.pak` texture archive, Play writes to the log how it
 differs from the game's — a texture in another position in the list, or under another global
@@ -73,6 +76,19 @@ everywhere that character is loaded. It is the part of Character Select Plus tha
 without its DLL (below, *Native patches*). Experimental: voices and some sounds can stay the
 original character's, and a stage may expect an upgrade the stand-in does not have.
 
+**Every character for every slot** (for testing): each story character's picker lists all
+the characters, Super Sonic (LoadSuperSonic, 0x0049A950) and Super Shadow (0x0049ABB0) among them;
+a stand-in from another play style gets the stage's layout for its kind (CharID 4 and 5 hunters,
+6 and 7 walkers) when the SA2 Randomizer's layouts are installed, and hunters outside the hunting
+stages get the level gates below. Super Sonic and Super Shadow are in random's speed group too.
+
+**Amy's and Metal Sonic's Spin Dash** (Characters, on by default) follows MainMemory's
+SA2-Amy-Metal-SpinDash: Sonic's spin dash check (0x00723DD5, where that mod nops a CharID2 test)
+runs with Amy read as Sonic and Metal Sonic as Shadow; the spin dash particles (0x00757B30,
+0x00757CD0), which pick Sonic's or Shadow's effect textures by CharID, get Amy's or Metal Sonic's
+(their texture lists trade places for the call, helper kind 15); and 0x00723851 leaves field 0x36A
+at 2 (kind 16). The 0.1.7 attempt crashed on the particles' empty texture list.
+
 **Random each stage** loads a random character of the same play style each time a story
 character is loaded (the choices are set aside while it is on). The game's restart handlers
 (0x0043BA75 and 0x0043BAAF, cases of its GameState switch) keep the character object, so a
@@ -97,8 +113,7 @@ leaves it out. **The Chao Walkers** in story stages: the walker's main (0x007415
 `CharObj2Base.CharID2` that only Tails's and Eggman's walkers have data for (the Dark Chao Walker
 crashed as it loaded, the Chao Walker when it shot with the story's upgrades), so whenever they can
 turn up the helper wraps it: while it runs they read as Tails's and Eggman's walkers, and their
-upgrades are cleared. (An Amy and Metal Sonic Spin Dash, the same trick on Sonic's action code in
-0.1.7, crashed the game when Amy used it and was taken out.)
+upgrades are cleared.
 
 ## Saves and logs
 

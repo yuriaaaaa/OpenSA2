@@ -92,6 +92,8 @@ final class NativePatch {
             new Chara("shadow", "Shadow", "speed", 0x717360, 1),
             new Chara("amy", "Amy", "speed", 0x7170E0, 0),
             new Chara("metalsonic", "Metal Sonic", "speed", 0x717640, 1),
+            new Chara("supersonic", "Super Sonic", "speed", 0x49A950, 9),
+            new Chara("supershadow", "Super Shadow", "speed", 0x49ABB0, 10),
             new Chara("knuckles", "Knuckles", "hunt", 0x728110, 4),
             new Chara("rouge", "Rouge", "hunt", 0x728460, 5),
             new Chara("tikal", "Tikal", "hunt", 0x7288B0, 4),
@@ -118,7 +120,7 @@ final class NativePatch {
     /** Characters: a random character of the same play style each stage (in swaps(), RANDOM_KEY). */
     static final String RANDOM_PREF = "swap_random", RANDOM_KEY = "*random*";
     /** With random on: anyone may turn up in a speed stage (the speed group draws from all twelve). */
-    static final String RANDOM_ANY_PREF = "swap_random_any", RANDOM_ANY_KEY = "*any*";
+    static final String RANDOM_ANY_PREF = "swap_random_any", RANDOM_ANY_KEY = "*any*", MOVES_KEY = "*moves*";
     private static final int CHECKPOINT_RECORDS = 0x1934B88;
     /** The game's restart handlers (cases of its GameState switch) keep the character object; the
      * restart-with-reload one fades, tears the stage down and moves to GameState 5 (delete and load
@@ -138,9 +140,30 @@ final class NativePatch {
      * Walker when it shot with the story's upgrades. Kind 11, set 1: while it runs, a Chao Walker
      * reads as Tails's walker and the Dark Chao Walker as Eggman's, and their upgrades are cleared. */
     private static final int CHARID2_OFFSET = 3, CHARID2_CHAO = 13, CHARID2_DARKCHAO = 14, WALKER_MAIN = 0x741530;
+    /** Amy's and Metal Sonic's Spin Dash, as MainMemory's SA2-Amy-Metal-SpinDash does it: Sonic's spin
+     * dash check (the chunk at 0x723DD5, where that mod nops the CharID2 test at 0x723E1F) runs with
+     * Amy read as Sonic and Metal Sonic as Shadow (kind 11, set 0); the spin dash particles
+     * (0x757B30, 0x757CD0), which take Sonic's or Shadow's effect textures by CharID, get Amy's or
+     * Metal Sonic's while one plays (kind 15); and 0x723851 leaves field 0x36A of Sonic's data at 2
+     * instead of 0 (kind 16, the mod's write at 0x72386C). */
+    static final String MOVES_PREF = "stand_in_spindash";
+    private static final int CHARID2_AMY = 8, CHARID2_METAL = 12, SPINDASH_CHECK = 0x723DD5, SPINDASH_SETUP = 0x723851;
+    private static final int[] SPINDASH_PARTICLES = {0x757B30, 0x757CD0};
+    private static final int TEX_SONEFF = 0xA08B94, TEX_SHADEFF = 0xA08D94, TEX_AMYEFF = 0xA08F94, TEX_METEFF = 0xA0917C;
+    private static final int STATE_EDI = 0x8F8;
 
     static String swapPref(String slot) {
         return "swap_" + slot;
+    }
+
+    /** Whether a chosen swap puts a character into another play style's stages. */
+    static boolean crossStyle(Context c) {
+        if (OpenSa2.prefs(c).getBoolean(RANDOM_PREF, false)) return false;
+        for (Map.Entry<String, String> e : swaps(c).entrySet()) {
+            Chara from = chara(e.getKey()), to = chara(e.getValue());
+            if (from != null && to != null && !from.group.equals(to.group)) return true;
+        }
+        return false;
     }
 
     /** The character each story character is played as (itself when not swapped). */
@@ -150,10 +173,11 @@ final class NativePatch {
         for (String s : SLOTS) {
             String v = p.getString(swapPref(s), s);
             Chara from = chara(s), to = chara(v);
-            out.put(s, to != null && to.group.equals(from.group) ? v : s);
+            out.put(s, to != null ? v : s);
         }
         if (p.getBoolean(RANDOM_PREF, false)) out.put(RANDOM_KEY, "1");
         if (p.getBoolean(RANDOM_PREF, false) && p.getBoolean(RANDOM_ANY_PREF, false)) out.put(RANDOM_ANY_KEY, "1");
+        if (p.getBoolean(MOVES_PREF, true)) out.put(MOVES_KEY, "1");
         return out;
     }
 
@@ -473,7 +497,7 @@ final class NativePatch {
         Map<String, String> swaps = swaps(c);
         boolean anySwap = false;
         for (Map.Entry<String, String> e : swaps.entrySet())
-            anySwap |= !e.getKey().equals(e.getValue());
+            anySwap |= !e.getKey().equals(MOVES_KEY) && !e.getKey().equals(e.getValue());
         List<CodeList.Code> codes = ModManager.codesToRun(c, new ArrayList<>());
         boolean menu = OpenSa2.prefs(c).getBoolean(MENU_PREF, true);
         if (!anySwap && codes.isEmpty() && !menu) return new Plan();
@@ -588,10 +612,18 @@ final class NativePatch {
                           ? "Characters: a random character each stage (the hunters and walkers too in speed stages, the same play style elsewhere)"
                           : "Characters: a random character of the same play style each stage");
         }
-        boolean walkers = random;
-        for (Map.Entry<String, String> e : swaps.entrySet())
-            if (!e.getKey().startsWith("*") && e.getValue().contains("chaowalker") && !e.getKey().equals(e.getValue()))
-                walkers = true;
+        boolean any = random && "1".equals(swaps.get(RANDOM_ANY_KEY));
+        boolean walkers = random, cross = false, huntersOut = any, moves = random;
+        for (Map.Entry<String, String> e : swaps.entrySet()) {
+            if (e.getKey().startsWith("*") || e.getKey().equals(e.getValue())) continue;
+            Chara from = chara(e.getKey()), to = chara(e.getValue());
+            if (from == null || to == null) continue;
+            if (to.key.contains("chaowalker")) walkers = true;
+            if (!to.group.equals(from.group)) cross = true;
+            if (to.group.equals("hunt") && !from.group.equals("hunt")) huntersOut = true;
+            if (to.key.equals("amy") || to.key.equals("metalsonic")) moves = true;
+        }
+        moves = moves && "1".equals(swaps.get(MOVES_KEY));
         for (Map.Entry<String, String> e : swaps.entrySet()) {
             if (random) break;
             if (e.getKey().startsWith("*")) continue;
@@ -619,7 +651,6 @@ final class NativePatch {
                 plan.patches++;
             }
             if (random) {
-                boolean any = "1".equals(swaps.get(RANDOM_ANY_KEY));
                 // A reload in the same stage after a checkpoint keeps the pick; before one, it picks again.
                 b.append(String.format(Locale.ROOT, "K %x\n", CHECKPOINT_RECORDS));
                 for (int g = 0; g < GROUPS.length; g++) {
@@ -638,30 +669,6 @@ final class NativePatch {
                         plan.patches++;
                     }
                 }
-                long[] sl = lib.fns.get(STAGE_SET_LOAD);
-                if (any && layouts != null && !layouts.isEmpty() && sl != null && !redirects.containsKey(STAGE_SET_LOAD)) {
-                    b.append(layouts);
-                    b.append(String.format(Locale.ROOT, "W %x %x %x %x %s %s\n", sl[0], sl[1], 13, 0,
-                                           hex(lib.bytes(sl[0], 16)), "stage layouts for walkers"));
-                    plan.patches++;
-                    plan.said.add("Characters: speed stages get a hunter's or walker's layout when one plays them (SA2 Randomizer's layouts)");
-                }
-                int retVa = retFunction(lib);
-                long[] retf = retVa > 0 ? lib.fns.get(retVa) : null;
-                if (any && retf != null) {
-                    b.append(String.format(Locale.ROOT, "J %x %x\n", retf[0], retVa));
-                    for (int lv : HUNTING_LEVELS) b.append(String.format(Locale.ROOT, "H %x\n", lv));
-                    int[][] gates = {{LOAD_EMERALD_MANAGER, 0}, {KNUCKLES_LEVEL_BOUNDS, 1}};
-                    for (int[] gt : gates) {
-                        long[] f = lib.fns.get(gt[0]);
-                        if (f == null || redirects.containsKey(gt[0])) continue;
-                        b.append(String.format(Locale.ROOT, "W %x %x %x %x %s %s\n", f[0], f[1], 14, gt[1],
-                                               hex(lib.bytes(f[0], 16)),
-                                               gt[1] == 0 ? "emerald manager in hunting stages only"
-                                                          : "hunter level bounds in hunting stages only"));
-                        plan.patches++;
-                    }
-                }
                 long[] rl = lib.fns.get(RESTART_RELOAD);
                 if (rl != null && !redirects.containsKey(RESTART_RELOAD)) {
                     b.append(String.format(Locale.ROOT, "Y %x %x\n", rl[0], RESTART_RELOAD));
@@ -674,8 +681,32 @@ final class NativePatch {
                     }
                 }
             }
+            long[] sl = lib.fns.get(STAGE_SET_LOAD);
+            if ((any || cross) && layouts != null && !layouts.isEmpty() && sl != null && !redirects.containsKey(STAGE_SET_LOAD)) {
+                b.append(layouts);
+                b.append(String.format(Locale.ROOT, "W %x %x %x %x %s %s\n", sl[0], sl[1], 13, 0,
+                                       hex(lib.bytes(sl[0], 16)), "stage layouts for walkers"));
+                plan.patches++;
+                plan.said.add("Characters: stages get a hunter's or walker's layout when one plays them (SA2 Randomizer's layouts)");
+            }
+            int retVa = retFunction(lib);
+            long[] retf = retVa > 0 ? lib.fns.get(retVa) : null;
+            if (huntersOut && retf != null) {
+                b.append(String.format(Locale.ROOT, "J %x %x\n", retf[0], retVa));
+                for (int lv : HUNTING_LEVELS) b.append(String.format(Locale.ROOT, "H %x\n", lv));
+                int[][] gates = {{LOAD_EMERALD_MANAGER, 0}, {KNUCKLES_LEVEL_BOUNDS, 1}};
+                for (int[] gt : gates) {
+                    long[] f = lib.fns.get(gt[0]);
+                    if (f == null || redirects.containsKey(gt[0])) continue;
+                    b.append(String.format(Locale.ROOT, "W %x %x %x %x %s %s\n", f[0], f[1], 14, gt[1],
+                                           hex(lib.bytes(f[0], 16)),
+                                           gt[1] == 0 ? "emerald manager in hunting stages only"
+                                                      : "hunter level bounds in hunting stages only"));
+                    plan.patches++;
+                }
+            }
             long[] fb = lib.named.get("sa2_guest_fast_base");
-            if (fb != null && (needWrap || menu || walkers)) b.append(String.format(Locale.ROOT, "G %x %x\n", fb[0], GUEST_SIZE));
+            if (fb != null && (needWrap || menu || walkers || moves || cross)) b.append(String.format(Locale.ROOT, "G %x %x\n", fb[0], GUEST_SIZE));
             if (menu) {
                 // Menus on screens wider than 16:9 (2340x1080 on a Galaxy S25). The menu backgrounds
                 // (story select, Settings) are 16:9 pictures in 1024x512 textures, drawn from the
@@ -710,11 +741,44 @@ final class NativePatch {
                     }
                 }
             }
+            // The C line (current level, MainCharObj2) for what reads them, once.
+            if (fb != null && !needWrap && (walkers || moves || cross || huntersOut))
+                b.append(String.format(Locale.ROOT, "C %x %x %x %x\n", CURRENT_LEVEL, MAIN_CHAR_OBJ2, CHARID_OFFSET,
+                                       LEVEL_INVALID));
+            if (moves && fb != null) {
+                b.append(String.format(Locale.ROOT, "M %x %x %x 0\n", CHARID2_OFFSET, CHARID2_AMY, 0));
+                b.append(String.format(Locale.ROOT, "M %x %x %x 0\n", CHARID2_OFFSET, CHARID2_METAL, 1));
+                b.append(String.format(Locale.ROOT, "S 0 %x %x %x\n", CHARID2_AMY, TEX_SONEFF, TEX_AMYEFF));
+                b.append(String.format(Locale.ROOT, "S 0 %x %x %x\n", CHARID2_METAL, TEX_SHADEFF, TEX_METEFF));
+                int added = 0;
+                long[] f = lib.fns.get(SPINDASH_CHECK);
+                if (f != null && !redirects.containsKey(SPINDASH_CHECK)) {
+                    b.append(String.format(Locale.ROOT, "W %x %x %x %x %s %s\n", f[0], f[1], 11, 0,
+                                           hex(lib.bytes(f[0], 16)), "spin dash check for Amy and Metal Sonic"));
+                    plan.patches++;
+                    added++;
+                }
+                for (int va : SPINDASH_PARTICLES) {
+                    f = lib.fns.get(va);
+                    if (f == null || redirects.containsKey(va)) continue;
+                    b.append(String.format(Locale.ROOT, "W %x %x %x %x %s %s\n", f[0], f[1], 15, 0,
+                                           hex(lib.bytes(f[0], 16)), String.format(Locale.ROOT, "spin dash particles %x", va)));
+                    plan.patches++;
+                    added++;
+                }
+                f = lib.fns.get(SPINDASH_SETUP);
+                if (f != null && !redirects.containsKey(SPINDASH_SETUP)) {
+                    b.append(String.format(Locale.ROOT, "Q %x 36a 2\n", f[0]));
+                    b.append(String.format(Locale.ROOT, "W %x %x %x %x %s %s\n", f[0], f[1], 16, STATE_EDI,
+                                           hex(lib.bytes(f[0], 16)), "spin dash setup (field 0x36A = 2)"));
+                    plan.patches++;
+                    added++;
+                }
+                plan.said.add(added == 4 ? "Characters: Amy and Metal Sonic can Spin Dash (MainMemory's fix, experimental)"
+                                         : "Characters: the Spin Dash for Amy and Metal Sonic is only partly in this build");
+            }
             long[] wm = lib.fns.get(WALKER_MAIN);
             if (walkers && fb != null && wm != null && !redirects.containsKey(WALKER_MAIN)) {
-                if (!needWrap)
-                    b.append(String.format(Locale.ROOT, "C %x %x %x %x\n", CURRENT_LEVEL, MAIN_CHAR_OBJ2, CHARID_OFFSET,
-                                           LEVEL_INVALID));
                 b.append(String.format(Locale.ROOT, "M %x %x %x 1\n", CHARID2_OFFSET, CHARID2_CHAO, 6));
                 b.append(String.format(Locale.ROOT, "M %x %x %x 1\n", CHARID2_OFFSET, CHARID2_DARKCHAO, 7));
                 b.append(String.format(Locale.ROOT, "W %x %x %x %x %s %s\n", wm[0], wm[1], 11, 0x11,
