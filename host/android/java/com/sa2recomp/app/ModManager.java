@@ -500,7 +500,9 @@ final class ModManager {
     /** Copies the enabled mods' files into the overlay and takes out the ones no longer wanted. */
     static void apply(Context c, File readRoot, Progress p) throws IOException {
         slimTextures = OpenSa2.prefs(c).getBoolean(SLIM_PREF, true);
+        StageLayouts.beforeApply(c);
         applyMods(active(c), c.getFilesDir(), OpenSa2.overlayDir(c), OpenSa2.modsDir(), readRoot, p);
+        StageLayouts.afterApply(c, readRoot, p);
     }
 
     /** apply() for the given mods, in order, with the folders named (the app's files folder holds
@@ -654,7 +656,7 @@ final class ModManager {
     }
 
     /** `rel` under the overlay, each folder spelled as the overlay or else the game folder spells it. */
-    private static File placeIn(File overlay, File readRoot, String rel) {
+    static File placeIn(File overlay, File readRoot, String rel) {
         File o = overlay, g = readRoot;
         String[] parts = rel.split("/");
         for (int i = 0; i < parts.length; i++) {

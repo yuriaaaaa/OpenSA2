@@ -124,6 +124,8 @@ final class NativePatch {
      * restart-with-reload one fades, tears the stage down and moves to GameState 5 (delete and load
      * the characters again). With random on, a restart before any checkpoint goes that way. */
     private static final int RESTART_A = 0x43BA75, RESTART_B = 0x43BAAF, RESTART_RELOAD = 0x43BB60;
+    /** LoadStageSETFile, which each stage's init calls to read its object layout (set file). */
+    private static final int STAGE_SET_LOAD = 0x488F60;
     static final String[] GROUPS = {"speed", "hunt", "mech"};
     /** The Chao Walkers in story stages: the walker's main (0x741530) reads CharObj2Base.CharID2 and
      * takes paths only Tails's and Eggman's walkers have data for (Character Select Plus forces two
@@ -481,7 +483,7 @@ final class NativePatch {
             p.said.add("Native patches: could not read the game's symbols; code patches and character swaps are off");
             return p;
         }
-        Plan plan = build(lib, codes, swaps, codeRanges(), menu);
+        Plan plan = build(lib, codes, swaps, codeRanges(), menu, StageLayouts.lines(c));
         if (plan.patches == 0) return plan;
         String refused = probe(c);
         if (refused != null) {
@@ -537,6 +539,12 @@ final class NativePatch {
     /** The plan for these codes and swaps against `lib` (`code`: the guest's code sections, or null;
      * `menu`: on screens wider than 16:9, menu backgrounds across the screen and the stage map centred). */
     static Plan build(Lib lib, List<CodeList.Code> codes, Map<String, String> swaps, long[][] code, boolean menu) {
+        return build(lib, codes, swaps, code, menu, "");
+    }
+
+    /** build() with the stage layout lines StageLayouts staged (walkers in speed stages), or "". */
+    static Plan build(Lib lib, List<CodeList.Code> codes, Map<String, String> swaps, long[][] code, boolean menu,
+                      String layouts) {
         Plan plan = new Plan();
         Map<Integer, String[]> redirects = new LinkedHashMap<>();   // from -> {to, label}
         for (CodeList.Code cd : codes) {
@@ -620,6 +628,14 @@ final class NativePatch {
                                                hex(lib.bytes(f[0], 16)), "random " + c.name));
                         plan.patches++;
                     }
+                }
+                long[] sl = lib.fns.get(STAGE_SET_LOAD);
+                if (any && layouts != null && !layouts.isEmpty() && sl != null && !redirects.containsKey(STAGE_SET_LOAD)) {
+                    b.append(layouts);
+                    b.append(String.format(Locale.ROOT, "W %x %x %x %x %s %s\n", sl[0], sl[1], 13, 0,
+                                           hex(lib.bytes(sl[0], 16)), "stage layouts for walkers"));
+                    plan.patches++;
+                    plan.said.add("Characters: speed stages get a walker's layout when a walker plays them (SA2 Randomizer's layouts)");
                 }
                 long[] rl = lib.fns.get(RESTART_RELOAD);
                 if (rl != null && !redirects.containsKey(RESTART_RELOAD)) {

@@ -460,3 +460,21 @@ Sonikko's light blue; which texture or model that is was not found yet (asked fo
   code list's "Fix Chao Walker Cannon Upgrade Crash" is the upgraded-shot draw, 0x75D914, which a
   cleared upgrade set never reaches). Emitted whenever random is on or a swap picks a Chao Walker.
   Emulator-checked with stand-ins only; whether it is the main that crashed is not proven.
+
+# Eleventh session (2026-10-16): 0.1.11
+
+- On the phone (0.1.10): the Chao Walker no longer crashed shooting; in City Escape it got stuck
+  at the dash panels. The user pointed at the SA2 Randomizer (GameBanana 48932, a DLL mod). Its
+  Options/setNNNN_s/0-4.bin are per-kind object layouts; Rando.dll (0x1004FB78) picks the file:
+  0 for Sonic/Shadow, 1 Knuckles/Rouge, 4 Tails/Eggman on foot, 3 its id 9, 2 everyone else (the
+  walkers). Its gd_PC set files are about its variant 0.
+- StageLayouts (launcher): with random walkers on and that mod installed, stages for each
+  Options setNNNN_s/_hd_s folder the usual file (the overlay's, else the game's) and 2.bin in
+  files/modbuild/layouts, writes `L <level> <0|2> <file> <overlay path>` lines, and before the
+  next Play's mods are applied deletes the overlay files it may have overwritten.
+- Helper kind 13 on LoadStageSETFile (0x488F60, called by each stage's init; CityEscape_Init
+  0x5DCD50 loads character animations, so the characters load first): as a listed stage's layout
+  loads, the class of the group-0 pick (the walkers' own group is 2) chooses which file is copied
+  over the overlay path (raw openat/read/write). If the layout loads first, the pick is made there
+  and LoadSonic takes it. A forced restart picks among the same class (the layout stays).
+  Emulator-checked for both orders, and that a stage with no lines is left alone.

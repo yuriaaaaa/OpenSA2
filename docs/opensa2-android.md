@@ -81,7 +81,14 @@ restart-with-reload handler (0x0043BB60: fade, tear down, GameState 5, which del
 characters again) unless a checkpoint was touched in the stage (CheckpointRecords, 0x01934B88),
 so before a checkpoint a restart or a death picks again. **Walkers in speed stages** puts Tails,
 Eggman and the Chao Walkers in the speed group too; a stand-in with no start or end position for
-the stage takes that of a character who has one. (The hunters were tried in speed stages in
+the stage takes that of a character who has one. A walker cannot get past a speed stage's dash
+panels and loops; the SA2 Randomizer mod (GameBanana 48932) has, in its Options folder, each
+stage's object layout per kind of character, and its DLL copies the one for the character it
+picked (2 for the walkers). With that mod installed (on or off), each Play stages its walker
+layouts, and the helper wraps the game's stage layout loader (LoadStageSETFile, 0x00488F60): as a
+speed stage's layout loads, the walkers' layout or the stage's usual one is copied over the file
+the game reads, for the character picked for it (`StageLayouts.java`, helper kind 13). A restart
+keeps the stage's layout, so it picks among the same kind. (The hunters were tried in speed stages in
 0.1.8: Tikal and Chaos drew a black screen, so they stay in their own stages.) **The Chao Walkers** in story stages: the walker's main (0x00741530) takes paths by
 `CharObj2Base.CharID2` that only Tails's and Eggman's walkers have data for (the Dark Chao Walker
 crashed as it loaded, the Chao Walker when it shot with the story's upgrades), so whenever they can

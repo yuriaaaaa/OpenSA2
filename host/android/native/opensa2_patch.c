@@ -83,6 +83,8 @@
  * Chao Walkers read as Tails's and Eggman's walkers in the walker's main.
  * Kind 12 wraps a restart handler (fourth field 0: pause Restart, 1: after a death) and sends it
  * down the game's restart-with-reload handler, `Y <off> <guest va>`, so random picks again.
+ * Kind 13 wraps the stage layout loader: `L <level> <class 0|2> <file> <where the game reads it>`
+ * lines give a speed stage a walker's layout (class 2) when a walker is to play it.
  */
 #include <stddef.h>
 #include <stdint.h>
@@ -99,6 +101,9 @@
 
 #define AT_FDCWD (-100)
 #define O_RDONLY 0
+#define O_WRONLY 1
+#define O_CREAT 0100
+#define O_TRUNC 01000
 #define PROT_READ 1
 #define PROT_WRITE 2
 #define PROT_EXEC 4
@@ -109,7 +114,7 @@
 #define MAX_WRAPS 24
 #define MAX_VARS 8
 #define MAX_CHARS 32
-#define PLAN_MAX (64 * 1024)
+#define PLAN_MAX (256 * 1024)
 #define BIG_MAX (1024 * 1024)
 
 /* ------------------------------------------------------------------ system calls */
@@ -130,6 +135,9 @@ static long sys6(long n, long a, long b, long c, long d, long e, long f) {
 }
 
 static long sys_open(const char *path) { return sys6(SYS_openat, AT_FDCWD, (long)path, O_RDONLY, 0, 0, 0); }
+static long sys_create(const char *path) {
+    return sys6(SYS_openat, AT_FDCWD, (long)path, O_WRONLY | O_CREAT | O_TRUNC, 0600, 0, 0);
+}
 static void sys_close(long fd) { sys6(SYS_close, fd, 0, 0, 0, 0, 0); }
 static long sys_read(long fd, void *buf, size_t n) { return sys6(SYS_read, fd, (long)buf, (long)n, 0, 0, 0); }
 static long sys_write(long fd, const void *buf, size_t n) { return sys6(SYS_write, fd, (long)buf, (long)n, 0, 0, 0); }
@@ -295,7 +303,7 @@ typedef struct {
     int early, late, said;  /* lines left as the screen opens and later; said "enter" */
 } wrap_t;
 
-enum { WRAP_LAYOUT = 3, WRAP_TRACE = 4, WRAP_SPRITE = 5, WRAP_DISPATCH = 6, WRAP_PTR = 7, WRAP_GATE = 8, WRAP_FILL = 9, WRAP_RANDOM = 10, WRAP_MOVES = 11, WRAP_RESTART = 12 };
+enum { WRAP_LAYOUT = 3, WRAP_TRACE = 4, WRAP_SPRITE = 5, WRAP_DISPATCH = 6, WRAP_PTR = 7, WRAP_GATE = 8, WRAP_FILL = 9, WRAP_RANDOM = 10, WRAP_MOVES = 11, WRAP_RESTART = 12, WRAP_SETLOAD = 13 };
 #define TRACE_EARLY 16
 #define TRACE_LATE 48
 #define TRACE_LATER_MS 4000
@@ -333,6 +341,23 @@ static uint32_t g_reload_va;
 static int g_force_repick;
 static int g_last_k[4] = {-1, -1, -1, -1};
 static uint32_t g_last_level[4];
+/* Each group member's own group (a walker is in the speed group too, its own group 2). */
+static uint8_t g_grp_home[4][MAX_GROUP];
+/* Kind 13: stage layouts per kind of stand-in (L lines: level, class 0 or 2, the layout to copy,
+ * where the game reads it). The class a speed stage's layout was put in place for, a pick made
+ * as the layout loaded (before the characters), and whether a pick came after the last load. */
+#define MAX_LAYOUTS 96
+#define LAYOUT_PATH 192
+static uint32_t g_ly_level[MAX_LAYOUTS], g_ly_class[MAX_LAYOUTS];
+static char g_ly_src[MAX_LAYOUTS][LAYOUT_PATH], g_ly_dst[MAX_LAYOUTS][LAYOUT_PATH];
+static int g_nly;
+static uint32_t g_lay_level = 0xFFFF, g_lay_class;
+static int g_pending_k = -1;
+static uint32_t g_pending_level = 0xFFFF;
+static int g_picked_since_load;
+static int g_load_k = -1;   /* this load's pick, for its second layout file */
+static uint32_t g_load_level = 0xFFFF;
+static char g_copybuf[256 * 1024];
 /* Kind 11: CharObj2Base.CharID2 values read as another for the length of a call (M lines). */
 #define MAX_MOVES 8
 static uint32_t g_cid2_off;
@@ -391,7 +416,7 @@ static void parse_plan(const char *p) {
                 if (!parse_hex(&s, &r->to) || !parse_hex(&s, &r->to_va)) continue;
             } else {
                 if (!parse_hex(&s, &r->wrap_kind) || !parse_hex(&s, &r->preg)) continue;
-                if (r->wrap_kind > WRAP_RESTART) continue;
+                if (r->wrap_kind > WRAP_SETLOAD) continue;
                 if (r->wrap_kind == WRAP_PTR ? (r->preg > 0x1FFF || (r->preg & 0xFFF) > 0x9F0) : r->preg > 0x9F0) continue;
                 if ((r->wrap_kind <= 2 || (r->wrap_kind == WRAP_PTR && (r->preg & 0xFFF) >= 0x800)) && (r->preg & 3)) continue;
             }
@@ -435,6 +460,22 @@ static void parse_plan(const char *p) {
             if (parse_hex(&s, &a) && parse_hex(&s, &b)) {
                 g_reload_off = a;
                 g_reload_va = (uint32_t)b;
+            }
+        } else if (t == 'L') {
+            if (parse_hex(&s, &a) && parse_hex(&s, &b) && g_nly < MAX_LAYOUTS && (b == 0 || b == 2)) {
+                char *src = g_ly_src[g_nly], *dst = g_ly_dst[g_nly];
+                size_t k = 0;
+                while (*s && *s != ' ' && *s != '\n' && k + 1 < LAYOUT_PATH) src[k++] = *s++;
+                src[k] = 0;
+                while (*s == ' ') s++;
+                k = 0;
+                while (*s && *s != ' ' && *s != '\n' && k + 1 < LAYOUT_PATH) dst[k++] = *s++;
+                dst[k] = 0;
+                if (src[0] == '/' && dst[0] == '/') {
+                    g_ly_level[g_nly] = (uint32_t)a;
+                    g_ly_class[g_nly] = (uint32_t)b;
+                    g_nly++;
+                }
             }
         } else if (t == 'K') {
             if (parse_hex(&s, &a)) g_cp_va = (uint32_t)a;
@@ -890,12 +931,26 @@ static void *wrap_random(wrap_t *w, void *state, uint32_t pc, void *memory) {
     if (g && g_guest_size && g_level_va && g_ok(g_level_va, 2)) level = g_rd16(g, g_level_va);
     if (g && g_guest_size && g_cp_va && g_ok(g_cp_va, 2)) cp = g_rd16(g, g_cp_va);
     int k, kept = 0;
-    if (!g_force_repick && g_last_k[grp] >= 0 && g_last_k[grp] < n && level != 0xFFFF &&
+    if (grp == 0 && !g_force_repick && g_pending_k >= 0 && g_pending_k < n && level == g_pending_level) {
+        k = g_pending_k;   /* picked as the stage's layout loaded */
+    } else if (!g_force_repick && g_last_k[grp] >= 0 && g_last_k[grp] < n && level != 0xFFFF &&
         level == g_last_level[grp] && cp == level) {
         k = g_last_k[grp];
         kept = 1;
+    } else if (grp == 0 && g_force_repick && level == g_lay_level) {
+        /* A restart keeps the stage's layout, which suits walkers (class 2) or the others: pick
+         * among those. */
+        int c[MAX_GROUP], m = 0;
+        for (int i = 0; i < n; i++)
+            if ((g_grp_home[0][i] == 2) == (g_lay_class == 2)) c[m++] = i;
+        k = m ? c[rnd() % (uint32_t)m] : (int)(rnd() % (uint32_t)n);
     } else {
         k = (int)(rnd() % (uint32_t)n);
+    }
+    if (grp == 0) {
+        g_pending_k = -1;
+        g_load_k = -1;
+        g_picked_since_load = 1;
     }
     g_force_repick = 0;
     g_last_k[grp] = k;
@@ -988,6 +1043,66 @@ static void *wrap_restart(wrap_t *w, void *state, uint32_t pc, void *memory) {
     return ((lifted_fn)(g_base + g_reload_off))(state, g_reload_va, memory);
 }
 
+/* Kind 13: the game's stage layout loader (LoadStageSETFile). A speed stage with L lines gets the
+ * layout for the character about to play it: the pick is made here when the layout loads first
+ * (wrap_random takes it), or taken from the pick just made; a walker's (class 2) or the others'
+ * (class 0) layout files are copied over the ones the game is about to read. */
+static int copy_file(const char *src, const char *dst) {
+    long in = sys_open(src);
+    if (in < 0) return 0;
+    long n = 0, r;
+    while (n < (long)sizeof g_copybuf && (r = sys_read(in, g_copybuf + n, sizeof g_copybuf - (size_t)n)) > 0) n += r;
+    sys_close(in);
+    if (n <= 0 || n >= (long)sizeof g_copybuf) return 0;
+    long out = sys_create(dst);
+    if (out < 0) return 0;
+    long w = sys_write(out, g_copybuf, (size_t)n);
+    sys_close(out);
+    return w == n;
+}
+static void *wrap_setload(wrap_t *w, void *state, uint32_t pc, void *memory) {
+    uint8_t *g = guest();
+    if (!g || !g_guest_size || !g_level_va || !g_ok(g_level_va, 2) || !g_nly || g_grp_n[0] <= 1)
+        return w->orig(state, pc, memory);
+    uint32_t level = g_rd16(g, g_level_va);
+    int any = 0;
+    for (int i = 0; i < g_nly; i++) any |= g_ly_level[i] == level;
+    if (!any) return w->orig(state, pc, memory);
+    int k;
+    if (g_load_k >= 0 && g_load_level == level) {
+        k = g_load_k;   /* a second layout file of the same load */
+    } else if (g_picked_since_load && g_last_level[0] == level && g_last_k[0] >= 0) {
+        k = g_last_k[0];   /* the characters loaded first */
+    } else {
+        k = (int)(rnd() % (uint32_t)g_grp_n[0]);
+        g_pending_k = k;
+        g_pending_level = level;
+    }
+    g_load_k = k;
+    g_load_level = level;
+    uint32_t cls = g_grp_home[0][k] == 2 ? 2 : 0;
+    int done = 0, wanted = 0;
+    for (int i = 0; i < g_nly; i++) {
+        if (g_ly_level[i] != level || g_ly_class[i] != cls) continue;
+        wanted++;
+        done += copy_file(g_ly_src[i], g_ly_dst[i]);
+    }
+    g_lay_level = level;
+    g_lay_class = cls;
+    g_picked_since_load = 0;
+    begin();
+    put("layout: stage ");
+    put_hex(level);
+    put(cls == 2 ? " set out for a walker (" : " set out as usual (");
+    put_dec((uint64_t)done);
+    put(" of ");
+    put_dec((uint64_t)wanted);
+    put(" file(s)), for ");
+    put_hex(g_grp_va[0][k]);
+    end();
+    return w->orig(state, pc, memory);
+}
+
 /* ------------------------------------------------------------------ every wrapper's entry */
 
 static void *wrap_common(int slot, void *state, uint32_t pc, void *memory) {
@@ -1002,6 +1117,7 @@ static void *wrap_common(int slot, void *state, uint32_t pc, void *memory) {
     case WRAP_RANDOM: return wrap_random(w, state, pc, memory);
     case WRAP_MOVES: return wrap_moves(w, state, pc, memory);
     case WRAP_RESTART: return wrap_restart(w, state, pc, memory);
+    case WRAP_SETLOAD: return wrap_setload(w, state, pc, memory);
     default: break;
     }
     uint8_t *g = guest();
@@ -1232,6 +1348,7 @@ static void apply(uintptr_t base, uint64_t psize) {
             else if (r->wrap_kind == WRAP_FILL) known = known && g_h_va && g_v_va;
             else if (r->wrap_kind == WRAP_MOVES) known = known && g_co2_va && g_nmv;
             else if (r->wrap_kind == WRAP_RESTART) known = known && g_level_va && g_reload_off;
+            else if (r->wrap_kind == WRAP_SETLOAD) known = known && g_level_va && g_nly;
             if (r->wrap_kind == WRAP_RANDOM) {
                 uint32_t grp = (uint32_t)r->preg & 3, va = 0;
                 for (int z = 0; z < g_nz; z++)
@@ -1246,6 +1363,7 @@ static void apply(uintptr_t base, uint64_t psize) {
                     if (g_grp_n[gi] >= MAX_GROUP) continue;
                     g_grp_fn[gi][g_grp_n[gi]] = (lifted_fn)tramp[i];
                     g_grp_va[gi][g_grp_n[gi]] = va;
+                    g_grp_home[gi][g_grp_n[gi]] = (uint8_t)grp;
                     g_grp_n[gi]++;
                 }
                 known = 1;

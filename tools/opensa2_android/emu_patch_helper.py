@@ -175,6 +175,12 @@ class Sys:
     def call(self, n, a):
         if n == 56:   # openat
             p = self.cstr(a[1])
+            if a[2] & 0o1:   # O_WRONLY (with O_CREAT|O_TRUNC): a file the helper writes
+                self.files[p] = b""
+                fd = self.next
+                self.next += 1
+                self.fds[fd] = [None, 0, p]
+                return fd
             if p not in self.files:
                 return -2
             fd = self.next
@@ -196,6 +202,8 @@ class Sys:
             data = bytes(self.uc.mem_read(a[1], a[2]))
             if a[0] == 2:
                 self.err += data
+            elif a[0] in self.fds and len(self.fds[a[0]]) == 3:
+                self.files[self.fds[a[0]][2]] += data
             return a[2]
         if n == 222:  # mmap
             size = (a[1] + 0xFFF) & ~0xFFF
@@ -565,6 +573,81 @@ def restart_checks(game, patch, check):
     check(run(13) == ("own", 0), "restart: after a checkpoint it runs its own body")
     uc.hook_del(h1)
     uc.hook_del(h2)
+
+
+def setload_checks(game, patch, check):
+    """Kind 13 around the ret function sub_7f4700 standing in for the stage layout loader, kind 10
+    on LoadSonic and Tails's walker (group 2, also in the speed group): for City Escape (13) the
+    layout loader picks the character and copies its class's layout over the file the game reads
+    (a walker's when the walker is picked), and LoadSonic then plays that pick; a second layout
+    file of the same load takes the same pick; a level with no L lines is left alone."""
+    sym = game.syms
+    fb, _ = sym["sa2_guest_fast_base"]
+    fn, fsize = sym["sub_7f4700"]
+    son, sons = sym["sub_716e00"]
+    wal, wals = sym["sub_740eb0"]
+    f16 = lambda v: game.b[game.vaddr_to_off(v):game.vaddr_to_off(v) + 16].hex()
+    plan = "\n".join(["opensa2-patch 1", f"G {fb:x} 20000000", "C 1934b70 1de9600 1 5b", "K 1934b88",
+                      f"Z {son:x} 716e00", f"Z {wal:x} 740eb0",
+                      f"W {son:x} {sons:x} a 0 {f16(son)} random Sonic",
+                      f"W {wal:x} {wals:x} a 6 {f16(wal)} random walker",
+                      "L d 0 /l/usual.bin /o/set0013_s.bin", "L d 2 /l/walker.bin /o/set0013_s.bin",
+                      f"W {fn:x} {fsize:x} d 0 {f16(fn)} layouts"]) + "\n"
+    uc, sc = boot(game, patch, plan.encode())
+    sc.files["/l/usual.bin"] = b"USUAL" * 10
+    sc.files["/l/walker.bin"] = b"WALKER" * 10
+    check("3 of 3 patch(es) applied" in sc.err.decode(), "layouts: the wrappers applied")
+    gb = guest_base_var(uc, game)
+    uc.mem_write(gb, struct.pack("<Q", GUEST))
+    for a in (0x1934000, 0x1F0000):
+        try:
+            uc.mem_map(GUEST + a, 0x10000 if a == 0x1F0000 else 0x1000, UC_PROT_READ | UC_PROT_WRITE)
+        except UcError:
+            pass
+    hit = []
+
+    def at(u, a, size, d):
+        hit.append(a)
+        u.emu_stop()
+    hs = [uc.hook_add(UC_HOOK_CODE, at, begin=GAME_BASE + v + 16, end=GAME_BASE + v + 16) for v in (son, wal)]
+
+    def call(native, va, level):
+        hit.clear()
+        uc.mem_write(GUEST + 0x1934B70, struct.pack("<h", level))
+        uc.mem_write(GUEST + 0x1934B88, struct.pack("<h", 0x5B))
+        uc.mem_write(GUEST + 0x1F8000, struct.pack("<I", 0x668227))
+        st = bytearray(0x1000)
+        struct.pack_into("<I", st, 0x908, 0x1F8000)
+        uc.mem_write(STATE, bytes(st))
+        run_function(uc, GAME_BASE + native, STATE, va, 0, limit=100000)
+        return hit[0] if hit else None
+
+    # The layout loading first (as a boss's init does): the pick is made there and LoadSonic takes it.
+    call(fn, 0x7F4700, 13)
+    out = sc.files.get("/o/set0013_s.bin")
+    who = call(son, 0x716E00, 13)
+    check(out == (b"WALKER" * 10 if who == GAME_BASE + wal + 16 else b"USUAL" * 10),
+          "layouts: a layout loaded before the characters is the one for the character then picked")
+    # The characters first (a stage's init loads the layout after them), stage after stage.
+    agree = True
+    seen = set()
+    for _ in range(24):
+        sc.files.pop("/o/set0013_s.bin", None)
+        who = call(son, 0x716E00, 13)
+        call(fn, 0x7F4700, 13)
+        out = sc.files.get("/o/set0013_s.bin")
+        call(fn, 0x7F4700, 13)                       # the hard-mode file of the same load
+        out2 = sc.files.get("/o/set0013_s.bin")
+        walker = who == GAME_BASE + wal + 16
+        seen.add(walker)
+        agree &= out == out2 and out == (b"WALKER" * 10 if walker else b"USUAL" * 10)
+    check(agree and seen == {True, False},
+          f"layouts: each load's layout matches the character just picked (both kinds seen: {seen})")
+    sc.files.pop("/o/set0013_s.bin", None)
+    call(fn, 0x7F4700, 14)
+    check("/o/set0013_s.bin" not in sc.files, "layouts: a stage with no layouts is left alone")
+    for h in hs:
+        uc.hook_del(h)
 
 
 def layout_checks(game, patch, check):
@@ -1023,6 +1106,7 @@ def main():
     fill_checks(game, patch, check)
     moves_checks(game, patch, check)
     restart_checks(game, patch, check)
+    setload_checks(game, patch, check)
     print("ALL PASS" if ok else "SOME FAILED")
     return 0 if ok else 1
 
