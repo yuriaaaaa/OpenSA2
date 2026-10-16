@@ -71,6 +71,12 @@
  * a function whose first run opens the log (as does a kind-3 wrapper's). Each logged function has
  * a budget of lines as the screen opens and another once it has been up a few seconds. Kind 9
  * wraps the port's sprite call so a menu background's 16:9 picture fills a wider screen (below).
+ * Kind 10 wraps a character's Load function (fourth field: its group, 0-3) and plays it as a random
+ * member of that group each time, with a line `Z <off> <guest va>` for each member; a second P
+ * line for a character gives the position wrappers a second partner to look a level up under.
+ * Kind 11 wraps a function of Sonic's action code so that, while it runs, a player whose
+ * CharObj2Base.CharID2 is `from` reads `to`, from lines `M <CharID2 offset> <from> <to>` (with
+ * the C line's MainCharObj2): Amy and Metal Sonic get the Spin Dash Sonic and Shadow have.
  */
 #include <stddef.h>
 #include <stdint.h>
@@ -83,6 +89,7 @@
 #define SYS_mmap 222
 #define SYS_mprotect 226
 #define SYS_clock_gettime 113
+#define SYS_getrandom 278
 
 #define AT_FDCWD (-100)
 #define O_RDONLY 0
@@ -282,7 +289,7 @@ typedef struct {
     int early, late, said;  /* lines left as the screen opens and later; said "enter" */
 } wrap_t;
 
-enum { WRAP_LAYOUT = 3, WRAP_TRACE = 4, WRAP_SPRITE = 5, WRAP_DISPATCH = 6, WRAP_PTR = 7, WRAP_GATE = 8, WRAP_FILL = 9 };
+enum { WRAP_LAYOUT = 3, WRAP_TRACE = 4, WRAP_SPRITE = 5, WRAP_DISPATCH = 6, WRAP_PTR = 7, WRAP_GATE = 8, WRAP_FILL = 9, WRAP_RANDOM = 10, WRAP_MOVES = 11 };
 #define TRACE_EARLY 16
 #define TRACE_LATE 48
 #define TRACE_LATER_MS 4000
@@ -300,7 +307,21 @@ static uint64_t g_fastbase_off, g_fastbase;   /* where the runtime keeps the gue
 static uint32_t g_guest_size;
 static uint32_t g_level_va, g_co2_va, g_charid_off, g_invalid = 0xFFFF;
 static uint32_t g_table[3][MAX_CHARS], g_table_size[3][MAX_CHARS];
-static uint8_t g_partner[MAX_CHARS];
+static uint8_t g_partner[MAX_CHARS], g_partner2[MAX_CHARS];
+/* Random swaps (kind 10): each group's members, their guest addresses (Z lines) and original bodies. */
+#define MAX_GROUP 8
+static uint64_t g_z_off[64];
+static uint32_t g_z_va[64];
+static int g_nz;
+static lifted_fn g_grp_fn[4][MAX_GROUP];
+static uint32_t g_grp_va[4][MAX_GROUP];
+static int g_grp_n[4];
+static uint64_t g_rng;
+/* Kind 11: CharObj2Base.CharID2 values read as another for the length of a call (M lines). */
+#define MAX_MOVES 8
+static uint32_t g_cid2_off;
+static uint8_t g_mv_from[MAX_MOVES], g_mv_to[MAX_MOVES];
+static int g_nmv;
 
 /* The layout wrapper's view: the screen size the game keeps (HorizontalResolution and
  * VerticalResolution, guest floats), the aspect to lay out at, and the runtime's own HUD-at-4:3
@@ -334,7 +355,7 @@ static void parse_plan(const char *p) {
         say("the plan is not a version 1 plan; nothing changed");
         return;
     }
-    for (int i = 0; i < MAX_CHARS; i++) g_partner[i] = 0xFF;
+    for (int i = 0; i < MAX_CHARS; i++) g_partner[i] = g_partner2[i] = 0xFF;
     while (*p) {
         while (*p && *p != '\n') p++;
         if (*p == '\n') p++;
@@ -354,7 +375,7 @@ static void parse_plan(const char *p) {
                 if (!parse_hex(&s, &r->to) || !parse_hex(&s, &r->to_va)) continue;
             } else {
                 if (!parse_hex(&s, &r->wrap_kind) || !parse_hex(&s, &r->preg)) continue;
-                if (r->wrap_kind > WRAP_FILL) continue;
+                if (r->wrap_kind > WRAP_MOVES) continue;
                 if (r->wrap_kind == WRAP_PTR ? (r->preg > 0x1FFF || (r->preg & 0xFFF) > 0x9F0) : r->preg > 0x9F0) continue;
                 if ((r->wrap_kind <= 2 || (r->wrap_kind == WRAP_PTR && (r->preg & 0xFFF) >= 0x800)) && (r->preg & 3)) continue;
             }
@@ -381,7 +402,24 @@ static void parse_plan(const char *p) {
                 g_table_size[a][b] = (uint32_t)d;
             }
         } else if (t == 'P') {
-            if (parse_hex(&s, &a) && parse_hex(&s, &b) && a < MAX_CHARS && b < MAX_CHARS) g_partner[a] = (uint8_t)b;
+            if (parse_hex(&s, &a) && parse_hex(&s, &b) && a < MAX_CHARS && b < MAX_CHARS) {
+                if (g_partner[a] == 0xFF) g_partner[a] = (uint8_t)b;
+                else g_partner2[a] = (uint8_t)b;
+            }
+        } else if (t == 'M') {
+            if (parse_hex(&s, &a) && parse_hex(&s, &b) && parse_hex(&s, &c) && a < 0x100 && b < 0x100 &&
+                c < 0x100 && g_nmv < MAX_MOVES) {
+                g_cid2_off = (uint32_t)a;
+                g_mv_from[g_nmv] = (uint8_t)b;
+                g_mv_to[g_nmv] = (uint8_t)c;
+                g_nmv++;
+            }
+        } else if (t == 'Z') {
+            if (parse_hex(&s, &a) && parse_hex(&s, &b) && g_nz < 64) {
+                g_z_off[g_nz] = a;
+                g_z_va[g_nz] = (uint32_t)b;
+                g_nz++;
+            }
         } else if (t == 'A') {
             if (parse_hex(&s, &a) && parse_hex(&s, &b) && parse_hex(&s, &c) && parse_hex(&s, &d) && c && d) {
                 g_h_va = (uint32_t)a;
@@ -806,6 +844,74 @@ static void *wrap_fill(wrap_t *w, void *state, uint32_t pc, void *memory) {
     return r;
 }
 
+/* Kind 10: a character's Load function, played as a random member of its group (preg: the group)
+ * each time it runs, so every stage can bring someone else of the same play style. */
+static uint32_t rnd(void) {
+    if (!g_rng) {
+        uint64_t seed = 0;
+        sys6(SYS_getrandom, (long)&seed, 8, 0, 0, 0, 0);
+        g_rng = seed ^ (now_ms() * 0x9E3779B97F4A7C15ull) ^ 1;
+    }
+    g_rng ^= g_rng << 13;
+    g_rng ^= g_rng >> 7;
+    g_rng ^= g_rng << 17;
+    return (uint32_t)(g_rng >> 16);
+}
+static void *wrap_random(wrap_t *w, void *state, uint32_t pc, void *memory) {
+    uint32_t grp = w->preg & 3;
+    int n = g_grp_n[grp];
+    if (n <= 1) return w->orig(state, pc, memory);
+    int k = (int)(rnd() % (uint32_t)n);
+    begin();
+    put("random: ");
+    put_hex(pc);
+    put(" played as ");
+    put_hex(g_grp_va[grp][k]);
+    end();
+    return g_grp_fn[grp][k](state, g_grp_va[grp][k], memory);
+}
+
+/* Kind 11: Sonic's action code starts a Spin Dash only for CharID2 Sonic or Shadow (a check in
+ * the middle of the function), so Amy and Metal Sonic, who run the same code, have none. For the
+ * length of the wrapped call each player whose CharID2 is an M line's `from` reads its `to`, and
+ * is put back after (unless the game changed it meanwhile). A nested call finds it already
+ * changed and leaves it to the outer one. */
+static void *wrap_moves(wrap_t *w, void *state, uint32_t pc, void *memory) {
+    uint8_t *g = guest();
+    if (!g || !g_guest_size || !g_co2_va || !g_nmv) return w->orig(state, pc, memory);
+    uint32_t at[2] = {0, 0};
+    uint8_t was[2] = {0, 0}, now[2] = {0, 0};
+    for (int p = 0; p < 2; p++) {
+        if (!g_ok(g_co2_va + 4 * p, 4)) continue;
+        uint32_t co2 = g_rd32(g, g_co2_va + 4 * p);
+        if (!co2 || !g_ok(co2 + g_cid2_off, 1)) continue;
+        uint8_t id = g[co2 + g_cid2_off];
+        for (int k = 0; k < g_nmv; k++) {
+            if (g_mv_from[k] != id) continue;
+            at[p] = co2 + g_cid2_off;
+            was[p] = id;
+            now[p] = g_mv_to[k];
+            g[at[p]] = now[p];
+            if (!w->said) {
+                w->said = 1;
+                begin();
+                put("moves: ");
+                put_hex(pc);
+                put(" runs for character ");
+                put_hex(id);
+                put(" as ");
+                put_hex(now[p]);
+                end();
+            }
+            break;
+        }
+    }
+    void *r = w->orig(state, pc, memory);
+    for (int p = 0; p < 2; p++)
+        if (at[p] && g[at[p]] == now[p]) g[at[p]] = was[p];
+    return r;
+}
+
 /* ------------------------------------------------------------------ every wrapper's entry */
 
 static void *wrap_common(int slot, void *state, uint32_t pc, void *memory) {
@@ -817,6 +923,8 @@ static void *wrap_common(int slot, void *state, uint32_t pc, void *memory) {
     case WRAP_PTR: return wrap_ptr(w, state, pc, memory);
     case WRAP_GATE: return wrap_gate(w, state, pc, memory);
     case WRAP_FILL: return wrap_fill(w, state, pc, memory);
+    case WRAP_RANDOM: return wrap_random(w, state, pc, memory);
+    case WRAP_MOVES: return wrap_moves(w, state, pc, memory);
     default: break;
     }
     uint8_t *g = guest();
@@ -828,6 +936,8 @@ static void *wrap_common(int slot, void *state, uint32_t pc, void *memory) {
                 uint8_t id = g[co2 + g_charid_off];
                 uint8_t partner = id < MAX_CHARS ? g_partner[id] : 0xFF;
                 uint32_t level = g_rd16(g, g_level_va);
+                if (partner != 0xFF && id < MAX_CHARS && g_partner2[id] != 0xFF && !has_level(g, w->kind, partner, level))
+                    partner = g_partner2[id];
                 if (partner != 0xFF && !has_level(g, w->kind, id, level) && has_level(g, w->kind, partner, level)) {
                     g[co2 + g_charid_off] = partner;
                     void *r = w->orig(state, pc, memory);
@@ -1034,6 +1144,20 @@ static void apply(uintptr_t base, uint64_t psize) {
             if (r->wrap_kind <= 2) known = known && g_co2_va && g_level_va;
             else if (r->wrap_kind == WRAP_LAYOUT) known = known && g_h_va && g_v_va && g_hud_off && g_sw_off && g_real_off;
             else if (r->wrap_kind == WRAP_FILL) known = known && g_h_va && g_v_va;
+            else if (r->wrap_kind == WRAP_MOVES) known = known && g_co2_va && g_nmv;
+            if (r->wrap_kind == WRAP_RANDOM) {
+                uint32_t grp = (uint32_t)r->preg & 3, va = 0;
+                for (int z = 0; z < g_nz; z++)
+                    if (g_z_off[z] == r->from) va = g_z_va[z];
+                if (!va || g_grp_n[grp] >= MAX_GROUP) {
+                    skipped(r, "the plan does not give its guest address");
+                    continue;
+                }
+                g_grp_fn[grp][g_grp_n[grp]] = (lifted_fn)tramp[i];
+                g_grp_va[grp][g_grp_n[grp]] = va;
+                g_grp_n[grp]++;
+                known = 1;
+            }
             if (known && r->wrap_kind == WRAP_DISPATCH) {
                 if (g_disp_orig) {
                     skipped(r, "only one dispatch wrapper is taken");

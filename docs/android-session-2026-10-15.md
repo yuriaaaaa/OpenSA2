@@ -387,3 +387,26 @@ Sonikko's light blue; which texture or model that is was not found yet (asked fo
   Not yet measured on the phone.
 - Modern SA2: The Trial is DLL-driven (physics, Rouge, menus); not workable here.
 
+
+# Seventh session (2026-10-16): 0.1.7, random characters and Amy's Spin Dash
+
+- **Characters → Random each stage.** Each time the game loads a story character it loads a
+  random member of that character's play-style group instead (Sonic, Shadow, Amy, Metal Sonic;
+  Knuckles, Rouge, Tikal, Chaos Zero; the walkers). Helper kind 10: every member's Load function
+  is wrapped, and the wrapper calls a random member's original body (getrandom seed, xorshift),
+  logging `random: <pc> played as <va>`. Plan lines `Z <off> <guest va>` give each member's
+  guest address; the position wrappers get each pair as partners (a second `P` line per id is a
+  second partner). Emulator: 40 LoadSonic calls reached Amy 12, Shadow 10, Metal 10, Sonic 8.
+- **Amy and Metal Sonic's Spin Dash.** They run Sonic's action code, which starts a Spin Dash
+  only when `CharObj2Base.CharID2` (offset 3) is Sonic (0) or Shadow (1): the lifted
+  `sub_723dd5` (the chunk holding the spin dash start, 0x723E11 is its charge delay) and
+  `Sonic_Somersault` (0x723880, rolling out of a somersault) each read CharID2 and skip
+  `Sonic_StartSpindash` (0x7234C0) for anyone else. Found by scanning the lifted Sonic code for
+  CharID2 reads (`add w1, wN, #3; bl read8`) followed by the `<= 1` flag pattern; the other reads
+  pick sounds, effects and animations. Both checks are mid-function, so helper kind 11 wraps the
+  two functions and, while they run, a player whose CharID2 is an `M <off> <from> <to>` line's
+  `from` reads `to` (Amy 8 → 0, Metal 12 → 1), put back after. Characters: "Amy and Metal Sonic
+  can Spin Dash" (default on; used only when a swap or random play can bring them in). Amy's own
+  somersault (the hammer swing) was already there; the Fire Somersault effects with upgrades are
+  a separate known crash (the "Disable Fire Somersault Effects" code works natively). Not yet
+  tried on the phone: sounds inside those two functions may be Sonic's or Shadow's.

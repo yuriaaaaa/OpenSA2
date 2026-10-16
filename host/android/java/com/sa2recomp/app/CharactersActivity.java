@@ -34,6 +34,14 @@ public class CharactersActivity extends Activity {
         if (!new File(getApplicationInfo().nativeLibraryDir, NativePatch.HELPER).isFile()) {
             col.addView(Ui.text(this, "This build has no " + NativePatch.HELPER + ", so swaps cannot apply.", 14, OpenSa2.GOLD));
         }
+        col.addView(Ui.check(this, "Random each stage: anyone of the same play style (the choices below are set aside)",
+                p.getBoolean(NativePatch.RANDOM_PREF, false), on -> {
+                    p.edit().putBoolean(NativePatch.RANDOM_PREF, on).apply();
+                    show();
+                }));
+        col.addView(Ui.check(this, "Amy and Metal Sonic can Spin Dash, and roll out of a somersault into one, as Sonic "
+                + "and Shadow do (experimental: they may use Sonic's or Shadow's sounds for it)",
+                p.getBoolean(NativePatch.MOVES_PREF, true), on -> p.edit().putBoolean(NativePatch.MOVES_PREF, on).apply()));
         String[] heads = {"Speed stages", null, "Treasure hunting", null, "Walker shooting", null};
         for (int i = 0; i < NativePatch.SLOTS.length; i++) {
             if (heads[i] != null) col.addView(Ui.heading(this, heads[i]));
@@ -58,6 +66,7 @@ public class CharactersActivity extends Activity {
             NativePatch.Chara from = NativePatch.chara(NativePatch.SLOTS[i]);
             NativePatch.Chara to = NativePatch.chara(sw.get(from.key));
             mButtons[i].setText(from.name + "  →  " + to.name);
+            mButtons[i].setAlpha(p.getBoolean(NativePatch.RANDOM_PREF, false) ? 0.4f : 1f);
         }
     }
 

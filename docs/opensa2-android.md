@@ -73,6 +73,13 @@ everywhere that character is loaded. It is the part of Character Select Plus tha
 without its DLL (below, *Native patches*). Experimental: voices and some sounds can stay the
 original character's, and a stage may expect an upgrade the stand-in does not have.
 
+**Random each stage** loads a random character of the same play style each time a story
+character is loaded (the choices are set aside while it is on). **Amy and Metal Sonic can Spin
+Dash** (on by default): they run Sonic's own action code, which starts a Spin Dash only for Sonic
+and Shadow (a check on `CharObj2Base.CharID2` in the middle of two functions); the helper wraps
+those two (the spin dash check, 0x00723DD5, and Sonic_Somersault, 0x00723880) so that while they
+run Amy reads as Sonic and Metal Sonic as Shadow, and puts them back after.
+
 ## Saves and logs
 
 The game's saves live in the app's own storage, which an uninstall clears, so after each session

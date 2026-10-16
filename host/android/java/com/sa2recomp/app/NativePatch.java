@@ -115,6 +115,16 @@ final class NativePatch {
         return out;
     }
 
+    /** Characters: a random character of the same play style each stage (in swaps(), RANDOM_KEY). */
+    static final String RANDOM_PREF = "swap_random", RANDOM_KEY = "*random*";
+    static final String[] GROUPS = {"speed", "hunt", "mech"};
+    /** Characters: Amy and Metal Sonic get the Spin Dash (in swaps(), MOVES_KEY). Sonic's action code
+     * starts one only for CharID2 Sonic or Shadow; two of its functions are wrapped (kind 11) so the
+     * stand-in reads as Sonic (Amy) or Shadow (Metal Sonic) while they run. */
+    static final String MOVES_PREF = "stand_in_spindash", MOVES_KEY = "*moves*";
+    private static final int CHARID2_OFFSET = 3, CHARID2_AMY = 8, CHARID2_METAL = 12;
+    private static final int SONIC_SPINDASH_CHECK = 0x723DD5, SONIC_SOMERSAULT = 0x723880;
+
     static String swapPref(String slot) {
         return "swap_" + slot;
     }
@@ -128,6 +138,8 @@ final class NativePatch {
             Chara from = chara(s), to = chara(v);
             out.put(s, to != null && to.group.equals(from.group) ? v : s);
         }
+        if (p.getBoolean(RANDOM_PREF, false)) out.put(RANDOM_KEY, "1");
+        if (p.getBoolean(MOVES_PREF, true)) out.put(MOVES_KEY, "1");
         return out;
     }
 
@@ -446,7 +458,8 @@ final class NativePatch {
         out.delete();
         Map<String, String> swaps = swaps(c);
         boolean anySwap = false;
-        for (Map.Entry<String, String> e : swaps.entrySet()) anySwap |= !e.getKey().equals(e.getValue());
+        for (Map.Entry<String, String> e : swaps.entrySet())
+            anySwap |= !e.getKey().equals(MOVES_KEY) && !e.getKey().equals(e.getValue());
         List<CodeList.Code> codes = ModManager.codesToRun(c, new ArrayList<>());
         boolean menu = OpenSa2.prefs(c).getBoolean(MENU_PREF, true);
         if (!anySwap && codes.isEmpty() && !menu) return new Plan();
@@ -541,7 +554,27 @@ final class NativePatch {
         int[] partner = new int[32];
         Arrays.fill(partner, -1);
         boolean needWrap = false;
+        boolean random = "1".equals(swaps.get(RANDOM_KEY));
+        if (random) {
+            // Each story character pair looks a level up under the other (a stand-in's CharID is one
+            // of the pair's).
+            int[][] pairs = {{0, 1}, {4, 5}, {6, 7}};
+            for (int[] pr : pairs) {
+                partner[pr[0]] = pr[1];
+                partner[pr[1]] = pr[0];
+            }
+            needWrap = true;
+            plan.said.add("Characters: a random character of the same play style each stage");
+        }
+        boolean moves = false;
+        for (Map.Entry<String, String> e : swaps.entrySet())
+            if (!e.getKey().startsWith("*") && (e.getValue().equals("amy") || e.getValue().equals("metalsonic"))
+                && !e.getKey().equals(e.getValue()))
+                moves = true;
+        moves = "1".equals(swaps.get(MOVES_KEY)) && (moves || random);
         for (Map.Entry<String, String> e : swaps.entrySet()) {
+            if (random) break;
+            if (e.getKey().startsWith("*")) continue;
             Chara from = chara(e.getKey()), to = chara(e.getValue());
             if (from == null || to == null || from == to) continue;
             if (!lib.has(from.load) || !lib.has(to.load)) {
@@ -565,8 +598,20 @@ final class NativePatch {
                                        hex(lib.bytes(f[0], 16)), e.getValue()[1]));
                 plan.patches++;
             }
+            if (random) {
+                for (int g = 0; g < GROUPS.length; g++) {
+                    for (Chara c : CHARAS) {
+                        if (!c.group.equals(GROUPS[g]) || !lib.has(c.load) || redirects.containsKey(c.load)) continue;
+                        long[] f = lib.fns.get(c.load);
+                        b.append(String.format(Locale.ROOT, "Z %x %x\n", f[0], c.load));
+                        b.append(String.format(Locale.ROOT, "W %x %x %x %x %s %s\n", f[0], f[1], 10, g,
+                                               hex(lib.bytes(f[0], 16)), "random " + c.name));
+                        plan.patches++;
+                    }
+                }
+            }
             long[] fb = lib.named.get("sa2_guest_fast_base");
-            if (fb != null && (needWrap || menu)) b.append(String.format(Locale.ROOT, "G %x %x\n", fb[0], GUEST_SIZE));
+            if (fb != null && (needWrap || menu || moves)) b.append(String.format(Locale.ROOT, "G %x %x\n", fb[0], GUEST_SIZE));
             if (menu) {
                 // Menus on screens wider than 16:9 (2340x1080 on a Galaxy S25). The menu backgrounds
                 // (story select, Settings) are 16:9 pictures in 1024x512 textures, drawn from the
@@ -600,6 +645,26 @@ final class NativePatch {
                         }
                     }
                 }
+            }
+            if (moves && fb != null && !needWrap)
+                b.append(String.format(Locale.ROOT, "C %x %x %x %x\n", CURRENT_LEVEL, MAIN_CHAR_OBJ2, CHARID_OFFSET,
+                                       LEVEL_INVALID));
+            if (moves && fb != null) {
+                b.append(String.format(Locale.ROOT, "M %x %x %x\n", CHARID2_OFFSET, CHARID2_AMY, 0));
+                b.append(String.format(Locale.ROOT, "M %x %x %x\n", CHARID2_OFFSET, CHARID2_METAL, 1));
+                int[] fns = {SONIC_SPINDASH_CHECK, SONIC_SOMERSAULT};
+                String[] names = {"spin dash for Amy and Metal Sonic", "spin dash from a somersault for Amy and Metal Sonic"};
+                int added = 0;
+                for (int k = 0; k < fns.length; k++) {
+                    long[] f = lib.fns.get(fns[k]);
+                    if (f == null || redirects.containsKey(fns[k])) continue;
+                    b.append(String.format(Locale.ROOT, "W %x %x %x %x %s %s\n", f[0], f[1], 11, 0,
+                                           hex(lib.bytes(f[0], 16)), names[k]));
+                    plan.patches++;
+                    added++;
+                }
+                plan.said.add(added == fns.length ? "Characters: Amy and Metal Sonic can Spin Dash (experimental)"
+                                                  : "Characters: the Spin Dash for Amy and Metal Sonic is not in this build of the game");
             }
             if (needWrap && fb == null) {
                 plan.said.add("Character swap: this build does not expose the game's memory, so swapped characters "

@@ -212,6 +212,10 @@ class Sys:
             return 0
         if n == 215:
             return 0
+        if n == 278:  # getrandom
+            import os
+            self.uc.mem_write(a[0], os.urandom(a[1]))
+            return a[1]
         if n == 113:  # clock_gettime
             self.uc.mem_write(a[1], struct.pack("<qq", self.now_ms // 1000, (self.now_ms % 1000) * 1_000_000))
             return 0
@@ -460,6 +464,55 @@ def fill_checks(game, patch, check):
     inside, after, regs = run(1920.0, bg169)
     check(inside is not None and tuple(round(x, 4) for x in inside) == tuple(round(x, 4) for x in bg169),
           "fill: on a 16:9 screen the background is left alone")
+    uc.hook_del(hk)
+
+
+def moves_checks(game, patch, check):
+    """Kind 11 around the ret function sub_7f4700 standing in for Sonic's spin dash check: with
+    MainCharObj2[0] Amy (CharID2 8) and [1] Metal Sonic (12), the body runs with them read as
+    Sonic (0) and Shadow (1), and both are put back after; Sonic himself is left alone."""
+    sym = game.syms
+    fn, fsize = sym["sub_7f4700"]
+    first16 = game.b[game.vaddr_to_off(fn):game.vaddr_to_off(fn) + 16].hex()
+    fb, _ = sym["sa2_guest_fast_base"]
+    plan = "\n".join(["opensa2-patch 1", f"G {fb:x} 20000000", "C 1934b70 1de9600 1 5b", "M 3 8 0", "M 3 c 1",
+                      f"W {fn:x} {fsize:x} b 0 {first16} spin dash"]) + "\n"
+    uc, sc = boot(game, patch, plan.encode())
+    check("1 of 1 patch(es) applied" in sc.err.decode(), "moves: the wrapper applied")
+    gb = guest_base_var(uc, game)
+    uc.mem_write(gb, struct.pack("<Q", GUEST))
+    for a in (0x1DE9000, 0x1000000, 0x1F0000):
+        try:
+            uc.mem_map(GUEST + a, 0x10000 if a == 0x1F0000 else 0x1000, UC_PROT_READ | UC_PROT_WRITE)
+        except UcError:
+            pass
+    seen = []
+
+    def at_body(u, a, size, d):
+        seen.append((bytes(u.mem_read(GUEST + 0x1000003, 1))[0], bytes(u.mem_read(GUEST + 0x1000103, 1))[0]))
+    hk = uc.hook_add(UC_HOOK_CODE, at_body, begin=GAME_BASE + fn + 16, end=GAME_BASE + fn + 16)
+
+    def run(c0, c1):
+        seen.clear()
+        uc.mem_write(GUEST + 0x1DE9600, struct.pack("<II", 0x1000000, 0x1000100))
+        uc.mem_write(GUEST + 0x1000000, bytes([0, 0, 0, c0]))
+        uc.mem_write(GUEST + 0x1000100, bytes([1, 1, 0, c1]))
+        uc.mem_write(GUEST + 0x1F8000, struct.pack("<I", 0x668227))
+        st = bytearray(0x1000)
+        struct.pack_into("<I", st, 0x908, 0x1F8000)
+        uc.mem_write(STATE, bytes(st))
+        run_function(uc, GAME_BASE + fn, STATE, 0x7F4700, 0, limit=100000)
+        after = (bytes(uc.mem_read(GUEST + 0x1000003, 1))[0], bytes(uc.mem_read(GUEST + 0x1000103, 1))[0])
+        s2 = bytes(uc.mem_read(STATE, 0x1000))
+        return (seen[0] if seen else None), after, (u32(s2, 0x908), u32(s2, 0x9A8))
+
+    inside, after, regs = run(8, 12)
+    check(inside == (0, 1), f"moves: Amy and Metal Sonic read as Sonic and Shadow inside (got {inside})")
+    check(after == (8, 12), f"moves: put back after (got {after})")
+    check(regs == (0x1F8004, 0x668227), "moves: the wrapped function returned normally")
+    check("moves: " in sc.err.decode(), "moves: it says so once")
+    inside, after, regs = run(0, 1)
+    check(inside == (0, 1) and after == (0, 1), "moves: Sonic and Shadow are left alone")
     uc.hook_del(hk)
 
 
@@ -916,6 +969,7 @@ def main():
 
     layout_checks(game, patch, check)
     fill_checks(game, patch, check)
+    moves_checks(game, patch, check)
     print("ALL PASS" if ok else "SOME FAILED")
     return 0 if ok else 1
 
