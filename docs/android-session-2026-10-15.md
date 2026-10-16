@@ -236,3 +236,41 @@ start line; finish a stage → normal results; Knuckles → Tikal in Pumpkin Hil
   instruction from the plan (an `X <off> <bytes>` plan line would be easy to add).
 - Cross-play-style swaps (Sonic in a Knuckles stage) need what Character Select Plus patches
   mid-function (goal ring, emerald manager); not offered.
+
+---
+
+# Third session (2026-10-16): first device results, the story select, Render Fix
+
+**On the phone (Galaxy S25, 0.1.2):** the helper loads (`LD_PRELOAD` accepted, the probe passed)
+and patches the game's code (`mprotect` to RWX allowed): game.log showed "1 of 1 patch(es)
+applied" and Disable Music, Disable Voices and Disable Loading Tips worked. Data codes (All
+Upgrades) work through the code engine. As expected, All Stages Appear in Stage Select, Disable
+Omochao (its second half nops 20 bytes inside 0x006C0A90) and All Events Skippable did not, and
+Character Select Plus's menu does not run (the Characters screen had not been tried).
+
+**The story select's offset.** The background, title and button hints sat in a 16:9-wide frame
+from the screen's left edge (1920 of 2340 px, a black strip on the right); the cards were centred.
+Only sub_67c0f0 (the display RF calls "Story Something", 0x0067C21F is its one SOC sprite call,
+0x0041DC80) reads HorizontalResolution among the story select's functions, so the helper gained:
+
+- `W` kind 3, laid out at an aspect (`A` line: H and V addresses, 16:9): for the length of the
+  call H reads V x 16/9 when the screen is wider, and the runtime's HUD-at-4:3 state is set as for
+  its own swap (`U` line: `g_hud43`=1, `g_hud43_swapped`=1 (a 1-byte bool in this build),
+  `g_hud43_real`=the real H), so its guards (viewport 0x420210, scissor 0x420390, viewport getter
+  0x4200F0, njSetScreen 0x77E980, projection 0x42B230, full-screen background 0x41B0C0) run with
+  the real width; all three and H are put back after. Verified in the guard's disassembly
+  (`__wrap_sub_420210` reads `g_hud43` at .data+0x8e6f300 and the swapped byte) and in the
+  emulator (`layout_checks`).
+- `W` kind 4, traced: logs return address, EAX and N stack words of each call while a kind-3
+  wrapper is on (48 lines a session). It wraps SOCDisplaySprite (EAX = the sprite, then PosX,
+  PosY, Width, Height, pri, ?, ?, U, V, colour) so the next session's game.log says exactly how
+  the story select draws, to stretch its background over the whole width (or adjust further).
+
+Expected on the phone: the story select's frame centred with equal strips both sides. **Not yet
+seen on the device** — check the screenshot and game.log's `laid out at 16:9` and `trace` lines.
+
+**SA2 Render Fix** (GameBanana 452445) was tried by the user: the game stopped right after
+loading its `PLCOMMTN.PRS` (trap: a read outside guest space). RF's models and motions are
+loaded by its own DLL code (`rfpl_mdlprs.c` and friends), and its menu fixes (rfm_menus.c: fades,
+the stage map's stretching and fill) do not touch the story select anyway. `ModManager.Mod.blocked()`
+now leaves it out at Play with that explanation.

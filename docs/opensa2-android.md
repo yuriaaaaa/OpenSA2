@@ -107,12 +107,26 @@ For character swaps the helper also wraps the three lookups that place a charact
 start and end (`LoadStartPosition` and the two end-position functions): when the stand-in's own
 tables have no entry for the level, the lookup is made under the character it stands in for.
 
+**The story select on wide screens.** The 2012 port draws the story select's background, title
+and button hints for a 16:9 screen measured from the left edge, so on a phone wider than 16:9 they
+sit to the left with a black strip on the right (the character cards, drawn on the centred 4:3
+canvas, are right). With **Settings → Centre the story select** on (the default), the helper
+wraps that screen's display (0x0067C0F0): while it draws, the screen width it reads is the 16:9
+width for the screen's height, so its layout is centred; the runtime's own HUD-at-4:3 guards are
+told the real width meanwhile, so the viewport, projection and full-screen backgrounds keep it.
+For the first frames the screen's sprite calls are logged to `game.log` (`trace` lines), to
+stretch its background over the whole width next.
+
+**SA2 Render Fix** is left out at Play: its model and motion files are loaded by its DLL, and
+without it the game stops at the title screen.
+
 `tools/opensa2_android/emu_patch_helper.py` runs the helper in an ARM64 emulator against a real
 `libsa2game.so` and checks the patched code, including the game's own `LoadStartPosition`.
 
 ## Settings
 
-Resolution (screen size, 1080/900/720/540/480 lines or 4:3), HUD at 4:3 positions, touch
+Resolution (screen size, 1080/900/720/540/480 lines or 4:3), HUD at 4:3 positions, centring the
+story select on wide screens (below), touch
 controls, vibration and opacity, saving session logs to `Internal storage/OpenSA2/logs/`,
 performance hints, extra `SA2_` lines for testing, and a reset of the copied mod files that keeps
 saves.

@@ -378,6 +378,102 @@ def given_checks(uc, game, sc, fn, check):
           f"Sonic standing in for Shadow starts at Shadow's start (pos {pos}, CharID after {cid})")
 
 
+def boot(game, patch, plan_text):
+    """A machine with the game and the helper loaded, the helper's constructor run on `plan_text`."""
+    uc, _ = machine(game, patch)
+    maps = (f"{GAME_BASE:x}-{GAME_BASE + 0x2d4000:x} r--p 00000000 fd:05 1234 /data/app/~~x==/com.yuriaaaaa.opensa2-y==/lib/arm64/libsa2game.so\n"
+            f"{GAME_BASE + 0x2d7000:x}-{GAME_BASE + 0x8ddc000:x} r-xp 002d3000 fd:05 1234 /data/app/~~x==/com.yuriaaaaa.opensa2-y==/lib/arm64/libsa2game.so\n").encode()
+    files = {
+        "/proc/self/environ": b"PATH=/system/bin\0OPENSA2_PATCHES=" + PLAN.encode() + b"\0",
+        "/proc/self/maps": maps,
+        "/proc/self/auxv": struct.pack("<4Q", 6, 4096, 0, 0),
+        PLAN: plan_text,
+    }
+    sc = Sys(uc, files)
+    uc.hook_add(UC_HOOK_INTR, sc.hook)
+    ctor = u64(bytes(uc.mem_read(PATCH_BASE + patch.dyn[25], 8)), 0)
+    run_function(uc, ctor, limit=50_000_000, want_trace=False)
+    return uc, sc
+
+
+def layout_checks(game, patch, check):
+    """Kind 3 (laid out at 16:9) around sub_86eac0, which calls the ret function sub_6fe430,
+    itself traced (kind 4): inside, HorizontalResolution reads 1920 for a 2340x1080 screen and the
+    runtime's HUD guard state says "swapped, real width 2340"; after, all of it is as before."""
+    sym = game.syms
+    caller, csize = sym["sub_86eac0"]
+    callee, esize = sym["sub_6fe430"]
+
+    def first16(v):
+        return game.b[game.vaddr_to_off(v):game.vaddr_to_off(v) + 16].hex()
+
+    hud, _ = sym["g_hud43"]
+    sw, swsize = sym["g_hud43_swapped"]
+    real, _ = sym["g_hud43_real"]
+    fb, _ = sym["sa2_guest_fast_base"]
+    plan = "\n".join([
+        "opensa2-patch 1",
+        f"G {fb:x} 20000000",
+        "A 174ba64 174ba68 10 9",
+        f"U {hud:x} {sw:x} {swsize:x} {real:x}",
+        f"W {caller:x} {csize:x} 3 0 {first16(caller)} a screen laid out at 16:9",
+        f"W {callee:x} {esize:x} 4 4 {first16(callee)} a traced call",
+    ]) + "\n"
+    uc, sc = boot(game, patch, plan.encode())
+    log = sc.err.decode()
+    print(log, end="")
+    check("2 of 2 patch(es) applied" in log, "layout: both wrappers applied")
+    gb = guest_base_var(uc, game)
+    uc.mem_write(gb, struct.pack("<Q", GUEST))
+    for a in (0x174B000, 0x1F0000, 0x200000, 0x210000):
+        try:
+            uc.mem_map(GUEST + a, 0x10000 if a >= 0x1F0000 else 0x1000, UC_PROT_READ | UC_PROT_WRITE)
+        except UcError:
+            pass
+    seen = []
+
+    def at_body(u, a, size, d):
+        h = u32(bytes(u.mem_read(GUEST + 0x174BA64, 4)), 0)
+        seen.append((h, struct.unpack("<i", bytes(u.mem_read(GAME_BASE + hud, 4)))[0],
+                     bytes(u.mem_read(GAME_BASE + sw, 1))[0], u32(bytes(u.mem_read(GAME_BASE + real, 4)), 0)))
+    hk = uc.hook_add(UC_HOOK_CODE, at_body, begin=GAME_BASE + callee + 16, end=GAME_BASE + callee + 16)
+
+    def run(h, v):
+        seen.clear()
+        uc.mem_write(GUEST + 0x174BA64, struct.pack("<ff", h, v))
+        st = bytearray(0x1000)
+        struct.pack_into("<I", st, 0x908, 0x200000)
+        struct.pack_into("<I", st, 0x918, 0x210100)
+        struct.pack_into("<I", st, 0x8A8, 0x1234)
+        uc.mem_write(STATE, bytes(st))
+        uc.mem_write(GUEST + 0x200000, struct.pack("<I", 0x401234))
+        run_function(uc, GAME_BASE + caller, STATE, 0x86EAC0, 0, limit=100000)
+        s2 = bytes(uc.mem_read(STATE, 0x1000))
+        after = (u32(bytes(uc.mem_read(GUEST + 0x174BA64, 4)), 0),
+                 struct.unpack("<i", bytes(uc.mem_read(GAME_BASE + hud, 4)))[0],
+                 bytes(uc.mem_read(GAME_BASE + sw, 1))[0])
+        return seen[:], after, (u32(s2, 0x908), u32(s2, 0x9A8))
+
+    f = lambda x: struct.unpack("<I", struct.pack("<f", x))[0]
+    before_hud = struct.unpack("<i", bytes(uc.mem_read(GAME_BASE + hud, 4)))[0]
+    inside, after, regs = run(2340.0, 1080.0)
+    check(inside and inside[0][0] == f(1920.0), f"layout: inside, the width reads 1920 ({inside[:1]})")
+    check(inside and inside[0][1] == 1 and inside[0][2] == 1 and inside[0][3] == f(2340.0),
+          "layout: inside, the runtime's guards are told the real width (g_hud43 on, swapped, real 2340)")
+    check(after == (f(2340.0), before_hud, 0), f"layout: after, width {after[0]:#x}, g_hud43 {after[1]} (was "
+          f"{before_hud}), swapped {after[2]}")
+    check(regs == (0x200004, 0x401234), "layout: the wrapped function returned normally")
+    log2 = sc.err.decode()
+    check("laid out at 16:9: width 2340 -> 1920" in log2, "layout: it says so once")
+    check("trace 0x6fe430 ret 0x86eacd" in log2, "trace: the call inside is logged with its return address")
+    n_trace = log2.count("trace ")
+    inside, after, regs = run(1920.0, 1080.0)
+    check(inside and inside[0][0] == f(1920.0) and inside[0][2] == 0, "layout: a 16:9 screen is left alone")
+    check(log2.count("trace ") == n_trace and sc.err.decode().count("trace ") == n_trace,
+          "trace: nothing is logged outside a layout")
+    uc.hook_del(hk)
+
+
 def main():
     game, patch = Elf(sys.argv[1]), Elf(sys.argv[2])
     sym = game.syms
@@ -644,6 +740,7 @@ def main():
         cid = bytes(uc.mem_read(GUEST + 0x1000001, 1))[0]
         check(cid == 0, f"{label}: the game's body runs with CharID Sonic for Shadow in City Escape")
 
+    layout_checks(game, patch, check)
     print("ALL PASS" if ok else "SOME FAILED")
     return 0 if ok else 1
 

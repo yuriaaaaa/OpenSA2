@@ -56,7 +56,7 @@ final class ModManager {
         String folder;
         File dir;
         String name, author = "", version = "", description = "", category = "";
-        String dllFile = "", codes = "", exeData = "", dllData = "";
+        String dllFile = "", codes = "", exeData = "", dllData = "", modId = "";
         final List<File> roots = new ArrayList<>();      // the mod folder and its IncludeDirs
         final Map<String, String> replaceFiles = new LinkedHashMap<>();
         int files;                                        // gd_PC files found
@@ -65,9 +65,22 @@ final class ModManager {
         final List<String> modelFolders = new ArrayList<>();   // gd_PC/<name>/ built into <name>.prs
         final List<String> refused = new ArrayList<>();        // mod.ini paths that leave the mod
 
+        /** Why this mod is left out at Play, or null: mods whose files only work with their DLL and
+         * stop the game without it. */
+        String blocked() {
+            String d = dllFile.toLowerCase(Locale.ROOT), id = modId.toLowerCase(Locale.ROOT);
+            if (d.equals("sa2-render-fix.dll") || id.equals("sa2-render-fix"))
+                return "SA2 Render Fix's model and motion files are meant to be loaded by its DLL; without it the game "
+                       + "stops at the title screen (right after loading its PLCOMMTN.PRS), so it is left out at Play. "
+                       + "Its fixes are DLL code, which this port cannot run.";
+            return null;
+        }
+
         List<String> warnings() {
             List<String> w = new ArrayList<>();
-            if (!dllFile.isEmpty()) w.add(dllNote(dllFile));
+            String b = blocked();
+            if (b != null) w.add("Left out: " + b);
+            if (!dllFile.isEmpty() && b == null) w.add(dllNote(dllFile));
             if (!exeData.isEmpty() || !dllData.isEmpty()) w.add("EXEData/DLLData patches are not supported");
             if (replacetex) w.add("Loose replacement images (replacetex/) are not supported");
             for (String r : refused) w.add("Refused a path that leaves the mod folder: " + r);
@@ -207,6 +220,7 @@ final class ModManager {
             m.description = get(top, "Description").replace("\\n", "\n");
             m.category = get(top, "Category");
             m.dllFile = get(top, "DLLFile");
+            m.modId = get(top, "ModID");
             m.codes = get(top, "Codes");
             m.exeData = get(top, "EXEData");
             m.dllData = get(top, "DLLData");
@@ -419,6 +433,11 @@ final class ModManager {
         Map<String, File> want = new LinkedHashMap<>();   // folded game path -> source
         Map<String, String> spell = new HashMap<>();      // folded -> as the mod spells it
         for (Mod m : mods) {
+            String blocked = m.blocked();
+            if (blocked != null) {
+                p.line("Mod left out: " + m.name + ". " + blocked);
+                continue;
+            }
             Map<String, File> mine = new LinkedHashMap<>();
             Map<String, String> mySpell = new HashMap<>();
             for (File r : m.roots) {
@@ -559,7 +578,7 @@ final class ModManager {
     static List<CodeList.Code> allCodes(Context c, List<String> errors) {
         List<CodeList.Code> out = new ArrayList<>(CodeList.parse(OpenSa2.codesFile(), "Codes.lst", errors));
         for (Mod m : active(c)) {
-            if (m.codes.isEmpty()) continue;
+            if (m.codes.isEmpty() || m.blocked() != null) continue;
             out.addAll(CodeList.parse(OpenSa2.resolveCase(m.dir, m.codes.replace('\\', '/')), m.name, errors));
         }
         return out;

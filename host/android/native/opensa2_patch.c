@@ -58,7 +58,13 @@
  *   C <CurrentLevel va> <MainCharObj2 va> <CharID offset> <the invalid level id>
  *   T <kind> <char id> <table va> <entry size>
  *   P <char id> <partner char id>
- * where an offset is from libsa2game.so's load address (its symbol value).
+ *   A <HorizontalResolution va> <VerticalResolution va> <num> <den>   (layout wrappers' aspect)
+ *   U <off of g_hud43> <off of g_hud43_swapped> <its size, 1 or 4> <off of g_hud43_real>
+ * where an offset is from libsa2game.so's load address (its symbol value). A W line's kind is 0-2
+ * for the position tables (its fourth field the State offset of the player's register), 3 for a
+ * function laid out at A's aspect (the runtime's HUD guards, U, keep the real width for the
+ * viewport and projection inside it) and 4 for a traced function (fourth field: how many stack
+ * words to log, only while a kind-3 wrapper is on).
  */
 #include <stddef.h>
 #include <stdint.h>
@@ -80,7 +86,7 @@
 #define MAP_ANONYMOUS 0x20
 
 #define MAX_PATCHES 64
-#define MAX_WRAPS 4
+#define MAX_WRAPS 8
 #define MAX_CHARS 32
 #define PLAN_MAX (64 * 1024)
 #define BIG_MAX (1024 * 1024)
@@ -251,8 +257,11 @@ typedef struct {
 
 typedef struct {
     lifted_fn orig;
-    uint32_t preg, kind;
+    uint32_t preg, kind;    /* kinds 0-2: position tables (preg: the player's register);
+                               3: laid out at an aspect; 4: traced (preg: stack words to log) */
 } wrap_t;
+
+enum { WRAP_LAYOUT = 3, WRAP_TRACE = 4 };
 
 static patch_t g_p[MAX_PATCHES];
 static int g_n;
@@ -267,6 +276,16 @@ static uint32_t g_guest_size;
 static uint32_t g_level_va, g_co2_va, g_charid_off, g_invalid = 0xFFFF;
 static uint32_t g_table[3][MAX_CHARS], g_table_size[3][MAX_CHARS];
 static uint8_t g_partner[MAX_CHARS];
+
+/* The layout wrapper's view: the screen size the game keeps (HorizontalResolution and
+ * VerticalResolution, guest floats), the aspect to lay out at, and the runtime's own HUD-at-4:3
+ * state (runtime/sa2_widescreen.c: g_hud43, g_hud43_swapped, g_hud43_real), whose guards give the
+ * viewport, scissor, projection, njSetScreen and the full-screen background the real width while
+ * a swap is on. */
+static uintptr_t g_base;
+static uint32_t g_h_va, g_v_va, g_num, g_den;
+static uint64_t g_hud_off, g_sw_off, g_sw_size, g_real_off;
+static int g_in_layout, g_layout_said, g_trace_left = 48;
 
 static void label_from(const char *s, char *out, size_t cap) {
     size_t k = 0;
@@ -299,7 +318,8 @@ static void parse_plan(const char *p) {
                 if (!parse_hex(&s, &r->to) || !parse_hex(&s, &r->to_va)) continue;
             } else {
                 if (!parse_hex(&s, &r->wrap_kind) || !parse_hex(&s, &r->preg)) continue;
-                if (r->wrap_kind > 2 || r->preg > 0x9F0 || (r->preg & 3)) continue;
+                if (r->wrap_kind > WRAP_TRACE || r->preg > 0x9F0) continue;
+                if (r->wrap_kind <= 2 && (r->preg & 3)) continue;
             }
             if (!parse_bytes16(&s, r->expect)) continue;
             label_from(s, r->label, sizeof r->label);
@@ -325,6 +345,22 @@ static void parse_plan(const char *p) {
             }
         } else if (t == 'P') {
             if (parse_hex(&s, &a) && parse_hex(&s, &b) && a < MAX_CHARS && b < MAX_CHARS) g_partner[a] = (uint8_t)b;
+        } else if (t == 'A') {
+            if (parse_hex(&s, &a) && parse_hex(&s, &b) && parse_hex(&s, &c) && parse_hex(&s, &d) && c && d) {
+                g_h_va = (uint32_t)a;
+                g_v_va = (uint32_t)b;
+                g_num = (uint32_t)c;
+                g_den = (uint32_t)d;
+            }
+        } else if (t == 'U') {
+            uint64_t e;
+            if (parse_hex(&s, &a) && parse_hex(&s, &b) && parse_hex(&s, &c) && parse_hex(&s, &e) &&
+                (c == 1 || c == 4)) {
+                g_hud_off = a;
+                g_sw_off = b;
+                g_sw_size = c;
+                g_real_off = e;
+            }
         }
     }
 }
@@ -352,8 +388,111 @@ static int has_level(const uint8_t *g, uint32_t kind, uint32_t id, uint32_t leve
     return 0;
 }
 
+static void g_wr32(uint8_t *g, uint32_t a, uint32_t v) {
+    g[a] = (uint8_t)v;
+    g[a + 1] = (uint8_t)(v >> 8);
+    g[a + 2] = (uint8_t)(v >> 16);
+    g[a + 3] = (uint8_t)(v >> 24);
+}
+
+static float f_of(uint32_t b) {
+    union {
+        uint32_t u;
+        float f;
+    } x;
+    x.u = b;
+    return x.f;
+}
+static uint32_t b_of(float f) {
+    union {
+        uint32_t u;
+        float f;
+    } x;
+    x.f = f;
+    return x.u;
+}
+
+/* Kind 3: the wrapped function lays itself out for a screen of g_num:g_den when the real one is
+ * wider. HorizontalResolution reads V x num/den for the length of the call, as the runtime's HUD
+ * at 4:3 does for the HUD (same guards, same state, so those calls keep the real width), and is
+ * put back after. A screen no wider than num:den, or a call inside the runtime's own swap, is
+ * left alone. */
+static void *wrap_layout(wrap_t *w, void *state, uint32_t pc, void *memory) {
+    uint8_t *g = g_fastbase ? *(uint8_t **)g_fastbase : 0;
+    if (!g || !g_guest_size || !g_h_va || !g_hud_off || !g_ok(g_h_va, 4) || !g_ok(g_v_va, 4))
+        return w->orig(state, pc, memory);
+    uint32_t hb = g_rd32(g, g_h_va), vb = g_rd32(g, g_v_va);
+    float h = f_of(hb), v = f_of(vb);
+    if (!(v > 0.0f) || !(h * (float)g_den > v * (float)g_num * 1.001f)) return w->orig(state, pc, memory);
+    volatile int32_t *hud = (volatile int32_t *)(g_base + g_hud_off);
+    volatile uint8_t *sw8 = (volatile uint8_t *)(g_base + g_sw_off);
+    volatile uint32_t *sw32 = (volatile uint32_t *)(g_base + g_sw_off);
+    volatile uint32_t *real = (volatile uint32_t *)(g_base + g_real_off);
+    uint32_t swapped = g_sw_size == 1 ? (*sw8 & 1u) : *sw32;
+    if (swapped) return w->orig(state, pc, memory);
+    int32_t saved = *hud;
+    float h2 = v * (float)g_num / (float)g_den;
+    if (!g_layout_said) {
+        g_layout_said = 1;
+        begin();
+        put("laid out at ");
+        put_dec(g_num);
+        put(":");
+        put_dec(g_den);
+        put(": width ");
+        put_dec((uint64_t)h);
+        put(" -> ");
+        put_dec((uint64_t)h2);
+        put(" while it draws, the viewport and projection keeping ");
+        put_dec((uint64_t)h);
+        end();
+    }
+    *real = hb;
+    if (g_sw_size == 1) *sw8 = 1;
+    else *sw32 = 1;
+    *hud = 1;
+    g_wr32(g, g_h_va, b_of(h2));
+    g_in_layout++;
+    void *r = w->orig(state, pc, memory);
+    g_in_layout--;
+    g_wr32(g, g_h_va, hb);
+    if (g_sw_size == 1) *sw8 = 0;
+    else *sw32 = 0;
+    *hud = saved;
+    return r;
+}
+
+/* Kind 4: logs a call's return address, EAX and its first stack words, while a layout wrapper is
+ * on (a budget of lines per session), then makes the call. For working out a screen's drawing. */
+static void *wrap_trace(wrap_t *w, void *state, uint32_t pc, void *memory) {
+    uint8_t *g = g_fastbase ? *(uint8_t **)g_fastbase : 0;
+    if (g && g_in_layout && g_trace_left > 0) {
+        uint8_t *st = (uint8_t *)state;
+        uint32_t esp = *(uint32_t *)(st + 0x908) + *(uint32_t *)(st + 0x848);
+        uint32_t n = w->preg > 12 ? 12 : w->preg;
+        if (g_ok(esp, 4 * (n + 1))) {
+            g_trace_left--;
+            begin();
+            put("trace ");
+            put_hex(pc);
+            put(" ret ");
+            put_hex(g_rd32(g, esp));
+            put(" eax ");
+            put_hex(*(uint32_t *)(st + 0x8A8));
+            for (uint32_t i = 1; i <= n; i++) {
+                put(" ");
+                put_hex(g_rd32(g, esp + 4 * i));
+            }
+            end();
+        }
+    }
+    return w->orig(state, pc, memory);
+}
+
 static void *wrap_common(int slot, void *state, uint32_t pc, void *memory) {
     wrap_t *w = &g_wrap[slot];
+    if (w->kind == WRAP_LAYOUT) return wrap_layout(w, state, pc, memory);
+    if (w->kind == WRAP_TRACE) return wrap_trace(w, state, pc, memory);
     uint8_t *g = g_fastbase ? *(uint8_t **)g_fastbase : 0;
     if (g && g_guest_size) {
         uint32_t player = *(uint32_t *)((uint8_t *)state + w->preg);
@@ -379,7 +518,11 @@ static void *wrap0(void *s, uint32_t pc, void *m) { return wrap_common(0, s, pc,
 static void *wrap1(void *s, uint32_t pc, void *m) { return wrap_common(1, s, pc, m); }
 static void *wrap2(void *s, uint32_t pc, void *m) { return wrap_common(2, s, pc, m); }
 static void *wrap3(void *s, uint32_t pc, void *m) { return wrap_common(3, s, pc, m); }
-static lifted_fn const g_wrap_fn[MAX_WRAPS] = {wrap0, wrap1, wrap2, wrap3};
+static void *wrap4(void *s, uint32_t pc, void *m) { return wrap_common(4, s, pc, m); }
+static void *wrap5(void *s, uint32_t pc, void *m) { return wrap_common(5, s, pc, m); }
+static void *wrap6(void *s, uint32_t pc, void *m) { return wrap_common(6, s, pc, m); }
+static void *wrap7(void *s, uint32_t pc, void *m) { return wrap_common(7, s, pc, m); }
+static lifted_fn const g_wrap_fn[MAX_WRAPS] = {wrap0, wrap1, wrap2, wrap3, wrap4, wrap5, wrap6, wrap7};
 
 /* ------------------------------------------------------------------ the process */
 
@@ -518,6 +661,7 @@ static void apply(uintptr_t base, uint64_t psize) {
             }
     }
     if (g_fastbase_off) g_fastbase = base + g_fastbase_off;
+    g_base = base;
 
     /* Code space: 128 bytes of trampoline and 32 of stub for each. */
     size_t need = (size_t)g_n * 160 + 64;
@@ -561,7 +705,10 @@ static void apply(uintptr_t base, uint64_t psize) {
                 skipped(r, "more wrappers than this helper has");
                 continue;
             }
-            if (!g_fastbase || !g_guest_size || !g_co2_va || !g_level_va) {
+            int known = g_fastbase && g_guest_size;
+            if (r->wrap_kind <= 2) known = known && g_co2_va && g_level_va;
+            else if (r->wrap_kind == WRAP_LAYOUT) known = known && g_h_va && g_v_va && g_hud_off && g_sw_off && g_real_off;
+            if (!known) {
                 skipped(r, "the plan does not say where the game's data is");
                 continue;
             }

@@ -63,6 +63,11 @@ final class NativePatch {
             {{0, 0x174A280}, {1, 0x174A3A0}, {4, 0x174A460}, {5, 0x174A540}, {7, 0x174A600}, {6, 0x174A6E0}},
     };
     private static final int[] TABLE_ENTRY = {0x2C, 0x2C, 0x20};
+    /** The story select's display (it lays out the 2012 port's 16:9 menu sprites from the screen
+     * width), the port's sprite call it makes them with, and the screen size the game keeps. */
+    private static final int STORY_SELECT_DISPLAY = 0x67C0F0, SOC_SPRITE = 0x41DC80;
+    private static final int H_RES = 0x174BA64, V_RES = 0x174BA68;
+    static final String MENU_PREF = "menu_169";
 
     /** A playable character: its Load function (void(int player)) and its CharID. */
     static final class Chara {
@@ -252,7 +257,8 @@ final class NativePatch {
                     }
                     String n = cstr(str, name);
                     if (n.equals("sa2_guest_fast_base") || n.equals("__remill_read_memory_32")
-                        || n.equals("__remill_function_return"))
+                        || n.equals("__remill_function_return") || n.equals("g_hud43")
+                        || n.equals("g_hud43_swapped") || n.equals("g_hud43_real"))
                         lib.named.put(n, new long[] {value, sz});
                 }
             }
@@ -440,7 +446,8 @@ final class NativePatch {
         boolean anySwap = false;
         for (Map.Entry<String, String> e : swaps.entrySet()) anySwap |= !e.getKey().equals(e.getValue());
         List<CodeList.Code> codes = ModManager.codesToRun(c, new ArrayList<>());
-        if (!anySwap && codes.isEmpty()) return new Plan();
+        boolean menu = OpenSa2.prefs(c).getBoolean(MENU_PREF, true);
+        if (!anySwap && codes.isEmpty() && !menu) return new Plan();
         if (!new File(c.getApplicationInfo().nativeLibraryDir, HELPER).isFile()) {
             Plan p = new Plan();
             p.said.add("Native patches: this build has no " + HELPER + ", so code patches and character swaps are off");
@@ -452,7 +459,7 @@ final class NativePatch {
             p.said.add("Native patches: could not read the game's symbols; code patches and character swaps are off");
             return p;
         }
-        Plan plan = build(lib, codes, swaps, codeRanges());
+        Plan plan = build(lib, codes, swaps, codeRanges(), menu);
         if (plan.patches == 0) return plan;
         String refused = probe(c);
         if (refused != null) {
@@ -505,8 +512,9 @@ final class NativePatch {
         }
     }
 
-    /** The plan for these codes and swaps against `lib` (`code`: the guest's code sections, or null). */
-    static Plan build(Lib lib, List<CodeList.Code> codes, Map<String, String> swaps, long[][] code) {
+    /** The plan for these codes and swaps against `lib` (`code`: the guest's code sections, or null;
+     * `menu`: lay the story select out at 16:9 on wider screens). */
+    static Plan build(Lib lib, List<CodeList.Code> codes, Map<String, String> swaps, long[][] code, boolean menu) {
         Plan plan = new Plan();
         Map<Integer, String[]> redirects = new LinkedHashMap<>();   // from -> {to, label}
         for (CodeList.Code cd : codes) {
@@ -556,11 +564,36 @@ final class NativePatch {
                 plan.patches++;
             }
             long[] fb = lib.named.get("sa2_guest_fast_base");
+            if (fb != null && (needWrap || menu)) b.append(String.format(Locale.ROOT, "G %x %x\n", fb[0], GUEST_SIZE));
+            if (menu) {
+                // The story select: the port's menu sprites there are laid out for a 16:9 screen from
+                // its left edge; laid out as on a 16:9 screen, the layout is centred. The runtime's
+                // HUD-at-4:3 guards keep the viewport and projection at the real width meanwhile.
+                long[] hud = lib.named.get("g_hud43"), sw = lib.named.get("g_hud43_swapped"),
+                       real = lib.named.get("g_hud43_real"), disp = lib.fns.get(STORY_SELECT_DISPLAY),
+                       soc = lib.fns.get(SOC_SPRITE);
+                if (fb == null || hud == null || sw == null || real == null || disp == null
+                    || (sw[1] != 1 && sw[1] != 4) || redirects.containsKey(STORY_SELECT_DISPLAY)) {
+                    plan.said.add("Story select at 16:9: this build of the game lacks what it needs, so it is left as it is");
+                } else {
+                    b.append(String.format(Locale.ROOT, "A %x %x %x %x\n", H_RES, V_RES, 16, 9));
+                    b.append(String.format(Locale.ROOT, "U %x %x %x %x\n", hud[0], sw[0], sw[1], real[0]));
+                    b.append(String.format(Locale.ROOT, "W %x %x %x %x %s %s\n", disp[0], disp[1], 3, 0,
+                                           hex(lib.bytes(disp[0], 16)), "story select at 16:9"));
+                    plan.patches++;
+                    plan.said.add("Story select: its 16:9 menu is centred on wider screens (Settings to turn off)");
+                    if (soc != null && !redirects.containsKey(SOC_SPRITE)) {
+                        // Its sprite calls, logged for the first few frames (game.log), to finish the job.
+                        b.append(String.format(Locale.ROOT, "W %x %x %x %x %s %s\n", soc[0], soc[1], 4, 10,
+                                               hex(lib.bytes(soc[0], 16)), "story select sprites (traced)"));
+                        plan.patches++;
+                    }
+                }
+            }
             if (needWrap && fb == null) {
                 plan.said.add("Character swap: this build does not expose the game's memory, so swapped characters "
                               + "may start at the wrong place");
             } else if (needWrap) {
-                b.append(String.format(Locale.ROOT, "G %x %x\n", fb[0], GUEST_SIZE));
                 b.append(String.format(Locale.ROOT, "C %x %x %x %x\n", CURRENT_LEVEL, MAIN_CHAR_OBJ2, CHARID_OFFSET,
                                        LEVEL_INVALID));
                 for (int k = 0; k < TABLES.length; k++)
