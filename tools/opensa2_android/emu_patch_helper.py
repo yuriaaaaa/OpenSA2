@@ -743,6 +743,52 @@ def spindash_checks(game, patch, check):
         uc.hook_del(h)
 
 
+def chargate_checks(game, patch, check):
+    """Kind 17 around LoadSonic (stopped at its body): with player 1 Super Sonic (CharID 9) it
+    returns at once in City Escape, runs in Final Hazard (H set 1); with Sonic (CharID 0) it runs."""
+    sym = game.syms
+    fb, _ = sym["sa2_guest_fast_base"]
+    fn, fsize = sym["sub_716e00"]
+    rt, _ = sym["sub_6fe430"]
+    f16 = game.b[game.vaddr_to_off(fn):game.vaddr_to_off(fn) + 16].hex()
+    plan = "\n".join(["opensa2-patch 1", f"G {fb:x} 20000000", "C 1934b70 1de9600 1 5b", f"J {rt:x} 6fe430",
+                      "H 5", "H 42 1", f"W {fn:x} {fsize:x} 11 61 {f16} chargate"]) + "\n"
+    uc, sc = boot(game, patch, plan.encode())
+    check("1 of 1 patch(es) applied" in sc.err.decode(), "character gate: the wrapper applied")
+    gb = guest_base_var(uc, game)
+    uc.mem_write(gb, struct.pack("<Q", GUEST))
+    for a in (0x1934000, 0x1DE9000, 0x1000000, 0x1F0000):
+        try:
+            uc.mem_map(GUEST + a, 0x10000 if a == 0x1F0000 else 0x1000, UC_PROT_READ | UC_PROT_WRITE)
+        except UcError:
+            pass
+    hit = []
+
+    def at(u, a, size, d):
+        hit.append(a)
+        u.emu_stop()
+    h = uc.hook_add(UC_HOOK_CODE, at, begin=GAME_BASE + fn + 16, end=GAME_BASE + fn + 16)
+
+    def run(level, cid):
+        hit.clear()
+        uc.mem_write(GUEST + 0x1934B70, struct.pack("<h", level))
+        uc.mem_write(GUEST + 0x1DE9600, struct.pack("<II", 0x1000000, 0))
+        uc.mem_write(GUEST + 0x1000000, bytes([0, cid, 0, cid]))
+        uc.mem_write(GUEST + 0x1F8000, struct.pack("<I", 0x401234))
+        st = bytearray(0x1000)
+        struct.pack_into("<I", st, 0x908, 0x1F8000)
+        uc.mem_write(STATE, bytes(st))
+        run_function(uc, GAME_BASE + fn, STATE, 0x716E00, 0, limit=100000)
+        s2 = bytes(uc.mem_read(STATE, 0x1000))
+        return bool(hit), (u32(s2, 0x908), u32(s2, 0x9A8))
+
+    ran, regs = run(13, 9)
+    check(not ran and regs == (0x1F8004, 0x401234), "character gate: Super Sonic in City Escape skips it")
+    check(run(0x42, 9)[0], "character gate: Super Sonic in Final Hazard runs it")
+    check(run(13, 0)[0], "character gate: Sonic in City Escape runs it")
+    uc.hook_del(h)
+
+
 def layout_checks(game, patch, check):
     """Kind 3 (laid out at 16:9) around sub_86eac0, which calls the ret function sub_6fe430,
     itself traced (kind 4): inside, HorizontalResolution reads 1920 for a 2340x1080 screen and the
@@ -1202,6 +1248,7 @@ def main():
     setload_checks(game, patch, check)
     levelgate_checks(game, patch, check)
     spindash_checks(game, patch, check)
+    chargate_checks(game, patch, check)
     print("ALL PASS" if ok else "SOME FAILED")
     return 0 if ok else 1
 

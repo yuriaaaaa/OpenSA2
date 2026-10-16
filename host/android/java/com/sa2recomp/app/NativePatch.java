@@ -132,7 +132,7 @@ final class NativePatch {
      * hunting stage's bounds (the black screen Knuckles, Tikal and Chaos gave in City Escape).
      * Character Select Plus runs these only in the hunting stages; kind 14 does the same. */
     private static final int LOAD_EMERALD_MANAGER = 0x73AA70, KNUCKLES_LEVEL_BOUNDS = 0x737B50;
-    private static final int FINAL_HAZARD = 0x42, LAST_BOSS_PLAYER_MANAGER = 0x49ECE0, EXEC_LOAD = 0x6EDEE0;
+    private static final int FINAL_HAZARD = 0x42, LAST_BOSS_PLAYER_MANAGER = 0x49ECE0, EXEC_LOAD = 0x6EDEE0, P_RESET_POS = 0x469050;
     private static final int[] HUNTING_LEVELS = {5, 7, 8, 16, 18, 25, 26, 32, 41, 44, 46, 49, 50, 59};
     static final String[] GROUPS = {"speed", "hunt", "mech"};
     /** The Chao Walkers in story stages: the walker's main (0x741530) reads CharObj2Base.CharID2 and
@@ -614,7 +614,7 @@ final class NativePatch {
                           : "Characters: a random character of the same play style each stage");
         }
         boolean any = random && "1".equals(swaps.get(RANDOM_ANY_KEY));
-        boolean walkers = random, cross = false, huntersOut = any, moves = random, supers = random;
+        boolean walkers = random, cross = false, huntersOut = any, moves = random, supers = false;
         for (Map.Entry<String, String> e : swaps.entrySet()) {
             if (e.getKey().startsWith("*") || e.getKey().equals(e.getValue())) continue;
             Chara from = chara(e.getKey()), to = chara(e.getValue());
@@ -662,6 +662,8 @@ final class NativePatch {
                         b.append(String.format(Locale.ROOT, "Z %x %x\n", f[0], c.load));
                         // The Dark Chao Walker crashes in stories (0.1.10 and 0.1.11 logs): left out.
                         if (c.key.equals("darkchaowalker")) continue;
+                        // The super forms crash in normal stages so far (0.1.15, 0.1.16): chosen swaps only.
+                        if (c.key.startsWith("super")) continue;
                         // bit 2: also in the speed group (the hunters and the walkers; the hunters'
                         // black screen there was their emerald manager and level bounds, gated below)
                         boolean speedToo = any && g != 0;
@@ -700,6 +702,15 @@ final class NativePatch {
                 // by them only) and Exec_Load (0x6EDEE0) run in Final Hazard only (set 1).
                 b.append(String.format(Locale.ROOT, "H %x 1\n", FINAL_HAZARD));
                 int[][] gates = {{LAST_BOSS_PLAYER_MANAGER, 0x10}, {EXEC_LOAD, 0x10}};
+                // PResetPos, which the Randomizer nops in SuperSonic_Main (call at 0x49B12E): for
+                // CharID 9 and 10 only, outside Final Hazard (kind 17, set 1).
+                long[] pr = lib.fns.get(P_RESET_POS);
+                if (pr != null && !redirects.containsKey(P_RESET_POS)) {
+                    int mask = (1 << (4 + 9 - 8)) | (1 << (4 + 10 - 8)) | 1;
+                    b.append(String.format(Locale.ROOT, "W %x %x %x %x %s %s\n", pr[0], pr[1], 17, mask,
+                                           hex(lib.bytes(pr[0], 16)), "PResetPos skipped for the super forms outside Final Hazard"));
+                    plan.patches++;
+                }
                 for (int[] gt : gates) {
                     long[] f = lib.fns.get(gt[0]);
                     if (f == null || redirects.containsKey(gt[0])) continue;

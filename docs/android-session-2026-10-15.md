@@ -546,3 +546,16 @@ Sonikko's light blue; which texture or model that is was not found yet (asked fo
   wrapper's fourth field bits 4-7); set 1 is Final Hazard; 0x49ECE0 (called only by the two super
   loaders) and 0x6EDEE0 return at once elsewhere when a super form can be played. The rest are
   mid-function and not done; whether these two were the crash is to be seen.
+
+# Seventeenth session (2026-10-16): 0.1.17
+
+- 0.1.16 on the phone: the LastBossPlayerManager gate applied (`level gate: 0x49ece0 skipped in
+  stage 0xd`); both super forms still crash, now with a one-byte read at 0 from an object's main
+  (return 0x0046F941 in RunObjectIndex), three times.
+- Rando.dll also writes a 5-byte nop at 0x49B12E in SuperSonic_Main's chunk 0x49B106: the lifted
+  chunk shows that call's target, 0x469050 (PResetPos, called by 151 functions, every character's
+  main). Helper kind 17 (character gate) returns at once from it while a player's CharID or
+  CharID2 is 9 or 10, outside H set 1 (Final Hazard). Its other super patches (Super_Delete
+  0x49BF8B, Super_DispDelay3, 0x49AACB-0x49AAD0 in LoadSuperSonic, 0x6DF2DA, 0x6DF067,
+  CheckBreakObject) are inside functions and not done. Super forms are out of random until they
+  stop crashing; chosen swaps still offer them.

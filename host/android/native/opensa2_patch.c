@@ -90,7 +90,8 @@
  * set of H lines, `H <level> [set]`, it takes).
  * Kind 15 trades two texture lists for a call while a player is a CharID2 (`S <set> <CharID2> <va>
  * <va>`); kind 16 writes a 16-bit field after a call (`Q <off> <field> <value>`, the fourth field
- * the State offset of the register holding the structure).
+ * the State offset of the register holding the structure). Kind 17 makes a shared function return
+ * at once while a player is one of some CharIDs, outside a set of levels.
  */
 #include <stddef.h>
 #include <stdint.h>
@@ -310,7 +311,7 @@ typedef struct {
     uint64_t from;          /* the wrapped function's offset (kind 16's Q lines) */
 } wrap_t;
 
-enum { WRAP_LAYOUT = 3, WRAP_TRACE = 4, WRAP_SPRITE = 5, WRAP_DISPATCH = 6, WRAP_PTR = 7, WRAP_GATE = 8, WRAP_FILL = 9, WRAP_RANDOM = 10, WRAP_MOVES = 11, WRAP_RESTART = 12, WRAP_SETLOAD = 13, WRAP_LEVELGATE = 14, WRAP_TEXSWAP = 15, WRAP_POSTSTORE = 16 };
+enum { WRAP_LAYOUT = 3, WRAP_TRACE = 4, WRAP_SPRITE = 5, WRAP_DISPATCH = 6, WRAP_PTR = 7, WRAP_GATE = 8, WRAP_FILL = 9, WRAP_RANDOM = 10, WRAP_MOVES = 11, WRAP_RESTART = 12, WRAP_SETLOAD = 13, WRAP_LEVELGATE = 14, WRAP_TEXSWAP = 15, WRAP_POSTSTORE = 16, WRAP_CHARGATE = 17 };
 #define TRACE_EARLY 16
 #define TRACE_LATE 48
 #define TRACE_LATER_MS 4000
@@ -440,7 +441,7 @@ static void parse_plan(const char *p) {
                 if (!parse_hex(&s, &r->to) || !parse_hex(&s, &r->to_va)) continue;
             } else {
                 if (!parse_hex(&s, &r->wrap_kind) || !parse_hex(&s, &r->preg)) continue;
-                if (r->wrap_kind > WRAP_POSTSTORE) continue;
+                if (r->wrap_kind > WRAP_CHARGATE) continue;
                 if (r->wrap_kind == WRAP_PTR ? (r->preg > 0x1FFF || (r->preg & 0xFFF) > 0x9F0) : r->preg > 0x9F0) continue;
                 if ((r->wrap_kind <= 2 || (r->wrap_kind == WRAP_PTR && (r->preg & 0xFFF) >= 0x800)) && (r->preg & 3)) continue;
             }
@@ -1255,6 +1256,41 @@ static void *wrap_poststore(wrap_t *w, void *state, uint32_t pc, void *memory) {
     return r;
 }
 
+/* Kind 17: a function shared by every character that one character must not run outside some
+ * levels (Super Sonic's and Super Shadow's main call PResetPos, which the SA2 Randomizer nops
+ * there). The fourth field: bits 0-3 the H set of levels where it always runs, bits 4-11 the
+ * CharIDs (bit 4 + id - 8, so 8-15) for which it returns at once elsewhere. */
+static void *wrap_chargate(wrap_t *w, void *state, uint32_t pc, void *memory) {
+    uint8_t *g = guest();
+    if (!g || !g_guest_size || !g_level_va || !g_co2_va || !g_ok(g_level_va, 2) || !g_ret_off)
+        return w->orig(state, pc, memory);
+    uint32_t level = g_rd16(g, g_level_va);
+    for (int i = 0; i < g_nhlevel; i++)
+        if (g_hlevel[i] == level && g_hset[i] == (w->preg & 15)) return w->orig(state, pc, memory);
+    int hit = 0;
+    for (int p = 0; p < 2 && !hit; p++) {
+        if (!g_ok(g_co2_va + 4 * p, 4)) continue;
+        uint32_t co2 = g_rd32(g, g_co2_va + 4 * p);
+        if (!co2 || !g_ok(co2 + g_charid_off + 2, 1)) continue;
+        /* CharID or CharID2 (two bytes on): a super form may carry its own in either. */
+        for (uint32_t k = 0; k <= 2; k += 2) {
+            uint32_t id = g[co2 + g_charid_off + k];
+            if (id >= 8 && id < 16 && ((w->preg >> (4 + id - 8)) & 1)) hit = 1;
+        }
+    }
+    if (!hit) return w->orig(state, pc, memory);
+    if (!w->said) {
+        w->said = 1;
+        begin();
+        put("character gate: ");
+        put_hex(pc);
+        put(" skipped in stage ");
+        put_hex(level);
+        end();
+    }
+    return ((lifted_fn)(g_base + g_ret_off))(state, g_ret_va, memory);
+}
+
 /* ------------------------------------------------------------------ every wrapper's entry */
 
 static void *wrap_common(int slot, void *state, uint32_t pc, void *memory) {
@@ -1273,6 +1309,7 @@ static void *wrap_common(int slot, void *state, uint32_t pc, void *memory) {
     case WRAP_LEVELGATE: return wrap_levelgate(w, state, pc, memory);
     case WRAP_TEXSWAP: return wrap_texswap(w, state, pc, memory);
     case WRAP_POSTSTORE: return wrap_poststore(w, state, pc, memory);
+    case WRAP_CHARGATE: return wrap_chargate(w, state, pc, memory);
     default: break;
     }
     uint8_t *g = guest();
@@ -1512,6 +1549,7 @@ static void apply(uintptr_t base, uint64_t psize) {
             else if (r->wrap_kind == WRAP_LEVELGATE) known = known && g_level_va && g_ret_off && g_nhlevel;
             else if (r->wrap_kind == WRAP_TEXSWAP) known = known && g_co2_va && g_nsw;
             else if (r->wrap_kind == WRAP_POSTSTORE) known = known && g_nq;
+            else if (r->wrap_kind == WRAP_CHARGATE) known = known && g_level_va && g_co2_va && g_ret_off;
             if (r->wrap_kind == WRAP_RANDOM) {
                 uint32_t grp = (uint32_t)r->preg & 3, va = 0;
                 for (int z = 0; z < g_nz; z++)
