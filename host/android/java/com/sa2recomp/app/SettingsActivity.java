@@ -32,6 +32,8 @@ public class SettingsActivity extends Activity {
                 on -> p.edit().putBoolean("hud43", on).apply()));
         col.addView(Ui.check(this, "Menus on wide screens: backgrounds fill the screen, stage map centred",
                 p.getBoolean(NativePatch.MENU_PREF, true), on -> p.edit().putBoolean(NativePatch.MENU_PREF, on).apply()));
+        col.addView(Ui.check(this, "Lighter mod textures: very large ones are halved so loading doesn't stall",
+                p.getBoolean(ModManager.SLIM_PREF, true), on -> p.edit().putBoolean(ModManager.SLIM_PREF, on).apply()));
 
         col.addView(Ui.heading(this, "Touch controls"));
         col.addView(Ui.check(this, "Show touch controls", p.getBoolean("touch_on", true),

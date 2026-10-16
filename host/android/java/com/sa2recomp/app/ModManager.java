@@ -353,6 +353,37 @@ final class ModManager {
         }
     }
 
+    /** A large texture archive with its big textures made lighter, cached in files/modbuild/slim/, or null. */
+    private static File slimmedPak(File filesDir, String key, File src, Progress p) {
+        String name = key.substring(key.lastIndexOf('/') + 1);
+        File dir = new File(new File(filesDir, "modbuild"), "slim");
+        File pak = new File(dir, Integer.toHexString(src.getAbsolutePath().hashCode()) + "_" + name);
+        File sig = new File(dir, pak.getName() + ".sig");
+        String want = "v1 " + TexSlim.MAX + " " + src.getAbsolutePath() + " " + src.length() + " " + src.lastModified() + "\n";
+        String text = OpenSa2.readText(sig);
+        if (text != null && text.startsWith(want)) {
+            if (text.substring(want.length()).startsWith("none")) return null;
+            if (pak.isFile()) return pak;
+        }
+        try {
+            int n = TexSlim.slimPak(src, pak);
+            if (n == 0) {
+                pak.delete();
+                OpenSa2.writeText(sig, want + "none");
+                return null;
+            }
+            OpenSa2.writeText(sig, want + n);
+            p.line("  " + name + ": " + n + " very large texture(s) made lighter to load (" + (src.length() >> 20) + " MB -> "
+                   + (pak.length() >> 20) + " MB)");
+            return pak;
+        } catch (IOException | RuntimeException | OutOfMemoryError e) {
+            pak.delete();
+            sig.delete();
+            p.line("  " + name + ": could not make its textures lighter (" + e + "); used as it is");
+            return null;
+        }
+    }
+
     /** The model folders right under a mod's gd_PC (ModelFolder). */
     static List<File> modelFolders(File gd) {
         List<File> out = new ArrayList<>();
@@ -468,11 +499,16 @@ final class ModManager {
 
     /** Copies the enabled mods' files into the overlay and takes out the ones no longer wanted. */
     static void apply(Context c, File readRoot, Progress p) throws IOException {
+        slimTextures = OpenSa2.prefs(c).getBoolean(SLIM_PREF, true);
         applyMods(active(c), c.getFilesDir(), OpenSa2.overlayDir(c), OpenSa2.modsDir(), readRoot, p);
     }
 
     /** apply() for the given mods, in order, with the folders named (the app's files folder holds
      * the manifest and the built model files). */
+    /** Settings: make very large mod textures lighter to load (TexSlim). */
+    static final String SLIM_PREF = "slim_textures";
+    static boolean slimTextures = true;
+
     static void applyMods(List<Mod> mods, File filesDir, File overlay, File modsDir, File readRoot, Progress p)
             throws IOException {
         Map<String, File> want = new LinkedHashMap<>();   // folded game path -> source
@@ -555,6 +591,15 @@ final class ModManager {
             if (!game.isFile()) continue;
             File merged = mergedPak(filesDir, e.getKey(), game, e.getValue(), p);
             if (merged != null) want.put(e.getKey(), merged);
+        }
+
+        // Very large texture archives: their big uncompressed textures halved, with mipmaps (TexSlim).
+        if (slimTextures) {
+            for (Map.Entry<String, File> e : want.entrySet()) {
+                if (!e.getKey().endsWith(".pak") || e.getValue().length() < (8L << 20)) continue;
+                File slim = slimmedPak(filesDir, e.getKey(), e.getValue(), p);
+                if (slim != null) e.setValue(slim);
+            }
         }
 
         // Texture archives a mod replaces: how they differ from the game's (Pak.compare).

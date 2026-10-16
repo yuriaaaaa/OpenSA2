@@ -372,3 +372,18 @@ too, place and global index kept). Checked on the three real archives (CSP's sta
 game's). The user also reported a loading-screen "spin ball" in Shadow's colours instead of
 Sonikko's light blue; which texture or model that is was not found yet (asked for a screenshot).
 
+# Sixth session (2026-10-16): 0.1.6
+
+- On the phone 0.1.5 fixed the menus (story select, stage map, Settings). The loading screen's
+  grey ball is not a texture: every picture in the game's PRS and SOC folders was checked
+  (NowLoading.pak is the gold ring and text, model.pak the Chao departure machine, the left strip
+  screenEffect.pak); it is drawn by the game's code, the same on PC with any mod. Left as is.
+- Sonic's head on Sonikko in cutscenes: events swap in their own face models; Sonikko ships none.
+- The slow stretch after a save loads: 30-60 frames a second dropping to ~18 for ~12 s, only with
+  mods; the player's texture counters show ~90 MB uploaded and mip levels generated on the CPU.
+  Sonikko's sonictex.pak (75 MB) and ssonictex.pak (104 MB) hold uncompressed 2048x2048 DDS with
+  no mipmaps. `TexSlim` (new) halves those to at most 1024 and adds the mip chain at Play for any
+  archive over 8 MB (Settings: "Lighter mod textures", default on); manifest gains largeHeap.
+  Not yet measured on the phone.
+- Modern SA2: The Trial is DLL-driven (physics, Rouge, menus); not workable here.
+

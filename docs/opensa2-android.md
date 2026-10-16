@@ -44,6 +44,13 @@ Select Plus each ship a stageMap.pak with only their own character changed), Pla
 the last mod's archive, with every texture it leaves as the game's taken from the earlier mod that
 changed it, so each character keeps its mod's icon (cached in the app's storage).
 
+**Very large textures.** Some character mods ship uncompressed 2048x2048 textures without
+mipmaps (Sonikko's sonictex.pak is 75 MB): the game stalls for seconds after a save loads while
+they upload and their smaller levels are built. With **Settings → Lighter mod textures** on (the
+default), Play writes any mod archive over 8 MB with such textures halved to at most 1024 pixels
+and given their mipmaps (`TexSlim`; Sonikko's sonictex.pak becomes 33 MB), cached in the app's
+storage.
+
 **Texture packs.** The loader's texture packs (`textures/<name>/` with an `index.txt`, or
 `textures/<name>.pvmx`) replace a whole texture list on PC. The game reads
 `resource/gd_PC/PRS/<name>.pak` first and takes PNG as well as DDS, so Play writes the pack as
