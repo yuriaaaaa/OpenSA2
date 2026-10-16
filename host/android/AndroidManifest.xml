@@ -56,7 +56,10 @@
                 <data android:scheme="sa2mm" />
             </intent-filter>
         </activity>
+        <activity android:name="com.sa2recomp.app.GbBrowseActivity" android:label="GameBanana"
+            android:exported="false" android:windowSoftInputMode="adjustResize" />
         <activity android:name="com.sa2recomp.app.CodesActivity" android:label="Codes" android:exported="false" />
+        <activity android:name="com.sa2recomp.app.CharactersActivity" android:label="Characters" android:exported="false" />
         <activity android:name="com.sa2recomp.app.SettingsActivity" android:label="Settings" android:exported="false" />
         <activity android:name="com.sa2recomp.app.TouchEditorActivity" android:label="Touch layout"
             android:exported="false" android:screenOrientation="sensorLandscape"

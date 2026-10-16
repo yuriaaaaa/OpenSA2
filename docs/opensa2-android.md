@@ -23,8 +23,10 @@ used. The layout editor keeps three profiles.
 
 Mods for sa2-mod-loader (SA Mod Manager) go in `Internal storage/OpenSA2/mods/`, one folder
 each with its `mod.ini`. Add one from the **Mods** screen with **Add mod from file** (a `.zip`
-or `.7z`) or **Install from GameBanana** (a mod link, its id, or a one-click `sa2mm:` link the
-browser hands over). Lower in the list wins. Play copies the enabled mods' `gd_PC` files, include
+or `.7z`) or **Browse GameBanana**: the newest Sonic Adventure 2 mods, a search box, and a tap to
+download and install one. The same box takes a mod link, its id, or a one-click `sa2mm:` link,
+and the browser's own **1-Click Install** on a mod page hands over to the app. Lower in the list
+wins. Play copies the enabled mods' `gd_PC` files, include
 folders and `[ReplaceFiles]` into the app's own storage; the game folder is never changed. A
 `mod.ini` path that leaves the mod folder (an absolute path or one with `..`) is refused.
 
@@ -39,10 +41,27 @@ differs from the game's — a texture in another position in the list, or under 
 index, is what makes a modded texture appear in the wrong place (a wrong loading-screen icon, for
 example).
 
+**Texture packs.** The loader's texture packs (`textures/<name>/` with an `index.txt`, or
+`textures/<name>.pvmx`) replace a whole texture list on PC. The game reads
+`resource/gd_PC/PRS/<name>.pak` first and takes PNG as well as DDS, so Play writes the pack as
+that PAK (cached, rebuilt when the pack changes). When the game's own archive of that name has
+more textures than the pack, the rest are kept from it by position. A pack for a texture list the
+game does not have — one a DLL makes, as Extra Chao Garden's are — is reported and left out.
+
 **What still cannot work, and is marked on the mod:** DLL mods (Windows x86 code; the model and
-texture files in the same mod still load, only what the DLL itself adds is missing),
-`EXEData`/`DLLData` patches, and the loader's loose texture-pack folders (`textures/`,
-`replacetex/`). RAR downloads cannot be unpacked on the phone — re-save them as `.zip` or `.7z`.
+texture files in the same mod still load, only what the DLL itself adds is missing — the mod list
+says what that is for the known ones: chest jiggle, Character Select Plus, Extra Chao Garden),
+`EXEData`/`DLLData` patches, and `replacetex/` loose images. RAR downloads cannot be unpacked on
+the phone — re-save them as `.zip` or `.7z`.
+
+## Characters
+
+**Characters** plays a story character's stages as another character of the same play style:
+Sonic or Shadow as either of them, Amy or Metal Sonic; Knuckles or Rouge as either, Tikal or
+Chaos Zero; the two walkers as either, or the Chao Walkers. It applies from the next Play,
+everywhere that character is loaded. It is the part of Character Select Plus that can be done
+without its DLL (below, *Native patches*). Experimental: voices and some sounds can stay the
+original character's, and a stage may expect an upgrade the stand-in does not have.
 
 ## Saves and logs
 
@@ -62,8 +81,34 @@ folder.
 
 **Codes** downloads the mod loader's `Codes.lst` from X-Hax/sa2-mod-loader. Codes switched on
 (and the active mods' required codes) are written into the game's memory while it plays.
-Patches that change the game's x86 code (writenop, writejump and code writes) do nothing in
-the recompiled game; the debug info lists them.
+
+A code that changes the game's x86 program works only when it turns off or redirects a whole
+function from its first byte (`ret` written at a function's entry, or a `writejump` from one
+function's entry to another's): those are applied at the start of the next Play by the native
+patch helper. Of the stock list that is Disable Music, Disable Voices, Disable Loading Tips and
+Disable Fire Somersault Effects. A patch in the middle of a function (most of them, such as All
+Stages Appear in Stage Select, Always Get A Rank or Instant Spin Dash) cannot work; the Codes
+screen says which is which under each code.
+
+## Native patches
+
+The recompiled game runs no x86: each guest function is a native ARM64 function, and most calls
+between them are direct, so writing x86 bytes into the game's program changes nothing. What can be
+reproduced is a change to a whole function: making it return at once, sending it to another
+function, or wrapping it. `lib/arm64-v8a/libopensa2patch.so` (`host/android/native/opensa2_patch.c`)
+does that in the game process before the game starts: the launcher reads `libsa2game.so`'s symbol
+table, writes the plan (`files/native-patches.txt`, `NativePatch.java`), and the play screen
+starts the game with `LD_PRELOAD` set to the helper. The helper checks each function's first bytes
+against the plan, keeps the original bodies callable through relocated trampolines, writes a jump
+at each patched entry, and logs every step to the session's `game.log` (`opensa2-patch:` lines,
+also shown in the session report). Nothing is preloaded when no code patch or swap is on.
+
+For character swaps the helper also wraps the three lookups that place a character at a level's
+start and end (`LoadStartPosition` and the two end-position functions): when the stand-in's own
+tables have no entry for the level, the lookup is made under the character it stands in for.
+
+`tools/opensa2_android/emu_patch_helper.py` runs the helper in an ARM64 emulator against a real
+`libsa2game.so` and checks the patched code, including the game's own `LoadStartPosition`.
 
 ## Settings
 
@@ -80,7 +125,9 @@ python3 tools/opensa2_android/build_apk.py --release-apk SA2Recompiled.apk \
 ```
 
 The native libraries come from an SA2 Recompiled release APK. The APK holds recompiled game
-code, so keep it for your own use.
+code, so keep it for your own use. The native patch helper is built with `--ndk`'s clang, or a
+`clang` and `ld.lld` on PATH (it is one freestanding C file); without one the APK has no helper
+and code patches and character swaps say so.
 
 Without `--keystore` the build makes `opensa2-debug.jks` next to the output and reuses it, so a
 later build installs over the app as an update and keeps its saves. Keep that keystore: a build

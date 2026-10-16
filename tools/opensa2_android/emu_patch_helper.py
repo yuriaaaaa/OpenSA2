@@ -1,0 +1,652 @@
+#!/usr/bin/env python3
+"""Runs libopensa2patch.so's constructor in an ARM64 emulator (unicorn) against a real
+libsa2game.so, then checks the patches by executing the patched game code.
+
+  pip install unicorn
+  python3 tools/opensa2_android/emu_patch_helper.py libsa2game.so libopensa2patch.so [plan.txt]
+
+libsa2game.so is the game library of the release APK the app is built from (lib/arm64-v8a/, never
+committed); libopensa2patch.so is host/android/native/opensa2_patch.c built as build_apk.py builds
+it. Without plan.txt a built-in plan is used (a refused bad-bytes entry, a ret patch, a swap in
+both directions, an adrp relocation, and the three position wrappers); with one (a plan the
+launcher wrote, NativePatch.build) the checks are: every patch applied, a ret patch returns, the
+swap reaches the other body, and the start-position wrapper finds the stand-in's start.
+
+The constructor's system calls are served here (a fake /proc/self/{environ,maps,auxv}, the plan,
+mmap/mprotect), so what is tested is the helper's own logic: plan parsing, the expected-bytes
+check, trampolines and stubs, the entry writes, and that the game's code then runs the way the
+patch says -- including the game's own LoadStartPosition, run with the runtime's function table
+brought up (sa2_ft_init, sa2_ft_register_generated) and the release's .text overlay in guest
+memory, against synthetic start tables. What it cannot show is what Android allows: LD_PRELOAD
+of the helper and making the game's code writable are only seen on a device (game.log's
+"opensa2-patch:" lines).
+"""
+import struct
+import sys
+
+from unicorn import (Uc, UcError, UC_ARCH_ARM64, UC_MODE_ARM, UC_HOOK_INTR, UC_HOOK_CODE,
+                     UC_PROT_READ, UC_PROT_WRITE, UC_PROT_EXEC, UC_PROT_ALL, UC_HOOK_MEM_UNMAPPED)
+from unicorn.arm64_const import *
+
+GAME_BASE = 0x5500000000
+PATCH_BASE = 0x7100000000
+MMAP_BASE = 0x7200000000
+STACK = 0x7f00000000
+STOP = 0x7e00000000          # a mapped page of `brk`; returning here ends a run
+GUEST = 0x6000000000          # guest memory (sparse: only the pages a test touches)
+STATE = 0x6f00000000
+IMPORTS = 0x6e00000000         # the game's C library imports: a page of `ret`, served in Python
+HEAP = 0x6d00000000
+PLAN = "/data/user/0/com.yuriaaaaa.opensa2/files/native-patches.txt"
+
+
+def u32(b, o): return struct.unpack_from("<I", b, o)[0]
+def u64(b, o): return struct.unpack_from("<Q", b, o)[0]
+
+
+class Elf:
+    def __init__(self, path):
+        self.b = open(path, "rb").read()
+        b = self.b
+        self.phoff, self.shoff = u64(b, 0x20), u64(b, 0x28)
+        self.phnum, self.shnum, self.shstrndx = struct.unpack_from("<H", b, 0x38)[0], struct.unpack_from("<H", b, 0x3C)[0], struct.unpack_from("<H", b, 0x3E)[0]
+        self.ph = []
+        for i in range(self.phnum):
+            o = self.phoff + 56 * i
+            self.ph.append(struct.unpack_from("<IIQQQQQQ", b, o))
+        self.sh = []
+        for i in range(self.shnum):
+            o = self.shoff + 64 * i
+            self.sh.append(struct.unpack_from("<IIQQQQIIQQ", b, o))
+        self.syms = {}
+        for s in self.sh:
+            if s[1] == 2:   # SHT_SYMTAB
+                strtab = self.sh[s[6]]
+                for k in range(s[5] // 24):
+                    o = s[4] + 24 * k
+                    name, info, other, shndx, value, size = struct.unpack_from("<IBBHQQ", b, o)
+                    nm = b[strtab[4] + name: b.index(b"\0", strtab[4] + name)].decode()
+                    if nm and shndx:
+                        self.syms[nm] = (value, size)
+        self.dynsyms = []
+        dyn = [p for p in self.ph if p[0] == 2]
+        self.dyn = {}
+        if dyn:
+            p = dyn[0]
+            for k in range(p[5] // 16):
+                tag, val = struct.unpack_from("<qQ", b, p[2] + 16 * k)
+                if tag == 0:
+                    break
+                self.dyn.setdefault(tag, val)
+
+    def vaddr_to_off(self, v):
+        for p in self.ph:
+            if p[0] == 1 and p[3] <= v < p[3] + p[5]:
+                return v - p[3] + p[2]
+        raise KeyError(hex(v))
+
+    def load(self, uc, base):
+        end = 0
+        for p in self.ph:
+            if p[0] != 1:
+                continue
+            _, flags, off, va, pa, filesz, memsz, align = p
+            a0 = (base + va) & ~0xFFF
+            a1 = (base + va + memsz + 0xFFF) & ~0xFFF
+            try:
+                uc.mem_map(a0, a1 - a0, UC_PROT_ALL)
+            except UcError:
+                # overlaps an earlier segment's last page
+                start = max(a0, end)
+                if a1 > start:
+                    uc.mem_map(start, a1 - start, UC_PROT_ALL)
+            uc.mem_write(base + va, self.b[off:off + filesz])
+            end = max(end, a1)
+        # protections after loading
+        for p in self.ph:
+            if p[0] != 1:
+                continue
+            _, flags, off, va, pa, filesz, memsz, align = p
+            a0 = (base + va) & ~0xFFF
+            a1 = (base + va + memsz + 0xFFF) & ~0xFFF
+            prot = (UC_PROT_READ if flags & 4 else 0) | (UC_PROT_WRITE if flags & 2 else 0) | (UC_PROT_EXEC if flags & 1 else 0)
+            if flags & 2:
+                prot |= UC_PROT_READ
+            uc.mem_protect(a0, a1 - a0, prot | UC_PROT_READ)
+        self.relocate(uc, base)
+        return end
+
+    def dynsym(self, idx):
+        symtab, strtab = self.dyn[6], self.dyn[5]
+        o = self.vaddr_to_off(symtab) + 24 * idx
+        name, info, other, shndx, value, size = struct.unpack_from("<IBBHQQ", self.b, o)
+        so = self.vaddr_to_off(strtab) + name
+        nm = self.b[so:self.b.index(b"\0", so)].decode()
+        return nm, shndx, value
+
+    def relocate(self, uc, base):
+        self.imports = {}
+        for (tab, sz) in ((7, 8), (23, 2)):     # DT_RELA/RELASZ, DT_JMPREL/PLTRELSZ
+            if tab not in self.dyn:
+                continue
+            start = self.vaddr_to_off(self.dyn[tab])
+            size = self.dyn[sz]
+            for o in range(start, start + size, 24):
+                off, info, add = struct.unpack_from("<QQq", self.b, o)
+                typ, sym = info & 0xFFFFFFFF, info >> 32
+                if typ == 1027:   # RELATIVE
+                    uc.mem_write(base + off, struct.pack("<Q", (base + add) & (2**64 - 1)))
+                elif typ in (257, 1025, 1026):  # ABS64, GLOB_DAT, JUMP_SLOT
+                    nm, shndx, value = self.dynsym(sym)
+                    v = base + value + add if shndx else IMPORTS + (sym << 4)
+                    if not shndx:
+                        self.imports[IMPORTS + (sym << 4)] = nm
+                    uc.mem_write(base + off, struct.pack("<Q", v & (2**64 - 1)))
+
+
+class Sys:
+    """The constructor's system calls."""
+
+    def __init__(self, uc, files):
+        self.uc, self.files, self.fds, self.next = uc, files, {}, 3
+        self.err = b""
+        self.mmap_at = MMAP_BASE
+        self.mprotects = []
+
+    def hook(self, uc, intno, _):
+        if intno != 2:
+            raise RuntimeError(f"interrupt {intno}")
+        n = uc.reg_read(UC_ARM64_REG_X8)
+        a = [uc.reg_read(r) for r in (UC_ARM64_REG_X0, UC_ARM64_REG_X1, UC_ARM64_REG_X2, UC_ARM64_REG_X3, UC_ARM64_REG_X4, UC_ARM64_REG_X5)]
+        r = self.call(n, a)
+        uc.reg_write(UC_ARM64_REG_X0, r & (2**64 - 1))
+
+    def cstr(self, a):
+        s = b""
+        while True:
+            c = self.uc.mem_read(a, 64)
+            i = c.find(b"\0")
+            if i >= 0:
+                return (s + c[:i]).decode()
+            s += bytes(c)
+            a += 64
+
+    def call(self, n, a):
+        if n == 56:   # openat
+            p = self.cstr(a[1])
+            if p not in self.files:
+                return -2
+            fd = self.next
+            self.next += 1
+            self.fds[fd] = [self.files[p], 0]
+            return fd
+        if n == 57:
+            self.fds.pop(a[0], None)
+            return 0
+        if n == 63:
+            f = self.fds.get(a[0])
+            if f is None:
+                return -9
+            data = f[0][f[1]:f[1] + a[2]]
+            f[1] += len(data)
+            self.uc.mem_write(a[1], bytes(data))
+            return len(data)
+        if n == 64:
+            data = bytes(self.uc.mem_read(a[1], a[2]))
+            if a[0] == 2:
+                self.err += data
+            return a[2]
+        if n == 222:  # mmap
+            size = (a[1] + 0xFFF) & ~0xFFF
+            at = self.mmap_at
+            self.mmap_at += size + 0x10000
+            prot = self.prot(a[2])
+            self.uc.mem_map(at, size, prot)
+            return at
+        if n == 226:  # mprotect
+            self.mprotects.append((a[0], a[1], a[2]))
+            if a[0] & 0xFFF:
+                return -22
+            self.uc.mem_protect(a[0], (a[1] + 0xFFF) & ~0xFFF, self.prot(a[2]))
+            return 0
+        if n == 215:
+            return 0
+        raise RuntimeError(f"system call {n}")
+
+    @staticmethod
+    def prot(p):
+        r = 0
+        if p & 1: r |= UC_PROT_READ
+        if p & 2: r |= UC_PROT_WRITE
+        if p & 4: r |= UC_PROT_EXEC
+        return r
+
+
+def machine(game, patch=None):
+    uc = Uc(UC_ARCH_ARM64, UC_MODE_ARM)
+    end = game.load(uc, GAME_BASE)
+    if patch:
+        patch.load(uc, PATCH_BASE)
+    uc.mem_map(STACK - 0x100000, 0x100000, UC_PROT_READ | UC_PROT_WRITE)
+    uc.mem_map(STOP, 0x1000, UC_PROT_ALL)
+    uc.mem_write(STOP, struct.pack("<I", 0xD4200000) * 1024)   # brk #0
+    uc.mem_map(STATE, 0x10000, UC_PROT_READ | UC_PROT_WRITE)
+    uc.mem_map(IMPORTS, 0x100000, UC_PROT_ALL)
+    uc.mem_write(IMPORTS, struct.pack("<I", 0xD65F03C0) * (0x100000 // 4))   # ret
+    uc.mem_map(HEAP, 0x4000000, UC_PROT_READ | UC_PROT_WRITE)
+    heap = [HEAP]
+
+    def libc(u, addr, size, data):
+        nm = game.imports.get(addr)
+        if nm is None:
+            return
+        x0, x1 = u.reg_read(UC_ARM64_REG_X0), u.reg_read(UC_ARM64_REG_X1)
+        if nm in ("calloc", "malloc"):
+            n = x0 * x1 if nm == "calloc" else x0
+            at = heap[0]
+            heap[0] += (n + 15) & ~15
+            u.reg_write(UC_ARM64_REG_X0, at)
+        elif nm == "free":
+            pass
+        else:
+            raise RuntimeError(f"the game called {nm}")
+    uc.hook_add(UC_HOOK_CODE, libc, begin=IMPORTS, end=IMPORTS + 0x100000)
+    return uc, end
+
+
+def bring_up(uc, game):
+    """The runtime's function table (sa2_ft_init + the generated entries) and the guest .text
+    bytes the release carries (jump tables), so a lifted function's switch can dispatch."""
+    sym = game.syms
+    uc.reg_write(UC_ARM64_REG_SP, STACK - 0x1000)
+    for name, arg in (("sa2_ft_init", 30000), ("sa2_ft_register_generated", 0)):
+        v, _ = sym[name]
+        uc.reg_write(UC_ARM64_REG_X0, arg)
+        uc.reg_write(UC_ARM64_REG_X30, STOP)
+        uc.emu_start(GAME_BASE + v, STOP, count=50_000_000)
+    runs_v, runs_n = sym["overlay_runs"]
+    bytes_v, bytes_n = sym["overlay_bytes"]
+    runs = game.b[game.vaddr_to_off(runs_v):game.vaddr_to_off(runs_v) + runs_n]
+    blob = game.b[game.vaddr_to_off(bytes_v):game.vaddr_to_off(bytes_v) + bytes_n]
+    for k in range(0, runs_n, 12):
+        va, ln, off = struct.unpack_from("<III", runs, k)
+        a0, a1 = (GUEST + va) & ~0xFFF, (GUEST + va + ln + 0xFFF) & ~0xFFF
+        for pg in range(a0, a1, 0x1000):
+            try:
+                uc.mem_map(pg, 0x1000, UC_PROT_READ | UC_PROT_WRITE)
+            except UcError:
+                pass
+        uc.mem_write(GUEST + va, blob[off:off + ln])
+
+
+def reset(uc):
+    """The same starting registers and a clean stack, so two machines can be compared."""
+    for k in range(29):
+        uc.reg_write(UC_ARM64_REG_X0 + k, 0x1000 + k)
+    uc.reg_write(UC_ARM64_REG_X29, 0x2900)
+    uc.mem_write(STACK - 0x10000, bytes(0x10000))
+
+
+def run_function(uc, addr, x0=0, x1=0, x2=0, until=None, limit=200000, want_trace=True):
+    uc.reg_write(UC_ARM64_REG_SP, STACK - 0x1000)
+    uc.reg_write(UC_ARM64_REG_X0, x0)
+    uc.reg_write(UC_ARM64_REG_X1, x1)
+    uc.reg_write(UC_ARM64_REG_X2, x2)
+    uc.reg_write(UC_ARM64_REG_X30, STOP)
+    trace = []
+    def unmapped(u, access, address, size, value, data):
+        pc = u.reg_read(UC_ARM64_REG_PC)
+        g = f" (guest {address - GUEST:#x})" if GUEST <= address < GUEST + 0x20000000 else ""
+        print(f"  unmapped access {access} at {address:#x}{g} size {size} from native {pc - GAME_BASE:#x}")
+        return False
+    hu = uc.hook_add(UC_HOOK_MEM_UNMAPPED, unmapped)
+    h = uc.hook_add(UC_HOOK_CODE, lambda u, a, s, d: trace.append(a)) if want_trace else None
+    try:
+        uc.emu_start(addr, until if until is not None else STOP, count=limit)
+    finally:
+        uc.hook_del(hu)
+        if h is not None:
+            uc.hook_del(h)
+    return trace
+
+
+def guest_base_var(uc, game):
+    r32, _ = game.syms["__remill_read_memory_32"]
+    code = game.b[game.vaddr_to_off(r32):game.vaddr_to_off(r32) + 0x30]
+    for k in range(0, 0x30, 4):
+        w = u32(code, k)
+        if (w & 0x9F000000) == 0x90000000:
+            immlo, immhi = (w >> 29) & 3, (w >> 5) & 0x7FFFF
+            imm = (immhi << 2) | immlo
+            if imm & (1 << 20):
+                imm -= 1 << 21
+            page = ((r32 + k) & ~0xFFF) + (imm << 12)
+            off = ((u32(code, k + 4) >> 10) & 0xFFF) * 8
+            return u64(bytes(uc.mem_read(GAME_BASE + page + off, 8)), 0)
+    raise RuntimeError("no guest base")
+
+
+def given_checks(uc, game, sc, fn, check):
+    gb = guest_base_var(uc, game)
+    uc.mem_map(GUEST + 0x1F0000, 0x20000, UC_PROT_READ | UC_PROT_WRITE)
+    uc.mem_write(gb, struct.pack("<Q", GUEST))
+    # Disable Music: returns at once.
+    music, _ = fn(0x442CF0)
+    st = bytearray(0x1000)
+    struct.pack_into("<I", st, 0x908, 0x200000)
+    uc.mem_write(STATE, bytes(st))
+    uc.mem_write(GUEST + 0x200000, struct.pack("<I", 0x401234))
+    run_function(uc, GAME_BASE + music, STATE, 0x442CF0, 0)
+    s2 = bytes(uc.mem_read(STATE, 0x1000))
+    check(u32(s2, 0x908) == 0x200004 and u32(s2, 0x9A8) == 0x401234, "Disable Music: the music function returns at once")
+    # Sonic -> Shadow reaches Shadow's body; Shadow -> Sonic reaches Sonic's.
+    sonic, _ = fn(0x716E00)
+    shadow, _ = fn(0x717360)
+    run_function(uc, GAME_BASE + sonic, STATE, 0x716E00, 0, until=GAME_BASE + shadow + 16)
+    check(uc.reg_read(UC_ARM64_REG_PC) == GAME_BASE + shadow + 16, "LoadSonic runs LoadShadow")
+    run_function(uc, GAME_BASE + shadow, STATE, 0x717360, 0, until=GAME_BASE + sonic + 16)
+    check(uc.reg_read(UC_ARM64_REG_PC) == GAME_BASE + sonic + 16, "LoadShadow runs LoadSonic")
+    # The start position wrapper with the game's own LoadStartPosition.
+    bring_up(uc, game)
+    for a, n in ((0x1746000, 0x5000), (0x1934000, 0x1000), (0x1DE9000, 0x2000), (0x1000000, 0x2000), (0x300000, 0x1000),
+                 (0x8AF000, 0x1000)):
+        try:
+            uc.mem_map(GUEST + a, n, UC_PROT_READ | UC_PROT_WRITE)
+        except UcError:
+            pass
+        uc.mem_write(GUEST + a, bytes(n))
+    for a in (0x1746F20, 0x17472C0, 0x17475D8, 0x17478F0, 0x1747BE8, 0x1747C40, 0x1748008, 0x1748378, 0x1748400):
+        uc.mem_write(GUEST + a, struct.pack("<h", 0x5B))
+    uc.mem_write(GUEST + 0x17472C0, struct.pack("<hHHH9f", 13, 0x1234, 0, 0, 5.0, 6.0, 7.0, 0, 0, 0, 0, 0, 0)
+                 + struct.pack("<h", 0x5B))                                         # Shadow's table has City Escape
+    uc.mem_write(GUEST + 0x1934B70, struct.pack("<h", 13))
+    uc.mem_write(GUEST + 0x1DE9600, struct.pack("<I", 0x1000000))
+    uc.mem_write(GUEST + 0x1DEA6E0, struct.pack("<I", 0x1001000))
+    uc.mem_write(GUEST + 0x1000000, bytes([0, 0, 0, 0]))                            # Sonic (CharID 0) in it
+    st = bytearray(0x1000)
+    struct.pack_into("<I", st, 0x908, 0x200000)
+    struct.pack_into("<I", st, 0x8C8, 0)
+    struct.pack_into("<I", st, 0x8F8, 0x300000)
+    uc.mem_write(STATE, bytes(st))
+    uc.mem_write(GUEST + 0x200000, struct.pack("<II", 0x401234, 0x300100))
+    lsp, _ = fn(0x43D8E0)
+    run_function(uc, GAME_BASE + lsp, STATE, 0x43D8E0, 0, limit=2_000_000)
+    pos = struct.unpack("<3f", bytes(uc.mem_read(GUEST + 0x300000, 12)))
+    rot = struct.unpack("<3i", bytes(uc.mem_read(GUEST + 0x300100, 12)))
+    cid = bytes(uc.mem_read(GUEST + 0x1000001, 1))[0]
+    check(pos == (5.0, 6.0, 7.0) and rot[1] == 0x1234 and cid == 0,
+          f"Sonic standing in for Shadow starts at Shadow's start (pos {pos}, CharID after {cid})")
+
+
+def main():
+    game, patch = Elf(sys.argv[1]), Elf(sys.argv[2])
+    sym = game.syms
+
+    def fn(va):
+        return sym[f"sub_{va:x}"]
+
+    def expect(va):
+        v, s = fn(va)
+        return game.b[game.vaddr_to_off(v):game.vaddr_to_off(v) + 16].hex()
+
+    plan = ["opensa2-patch 1"]
+    tests = [  # (from va, to va, label)
+        (0x442CF0, 0x6FE430, "Disable Music: sub_442cf0 -> ret"),
+        (0x716E00, 0x717360, "swap: LoadSonic -> LoadShadow"),
+        (0x717360, 0x716E00, "swap: LoadShadow -> LoadSonic"),
+        (0x728110, 0x7288B0, "LoadKnuckles -> LoadTikal"),
+        (0x6FE440 if "sub_6fe440" in sym else 0x442CF0, 0x80F95D, "adrp test -> sub_80f95d"),
+        (0x80F95D, 0x6FE430, "sub_80f95d -> ret (gives it a trampoline)"),
+    ]
+    for f, t, label in tests:
+        fv, fs = fn(f)
+        tv, _ = fn(t)
+        plan.append(f"R {fv:x} {fs:x} {tv:x} {t:x} {expect(f)} {label}")
+    plan.append("R 10 40 20 401000 00000000000000000000000000000000 bad bytes are refused")
+    # The position wrappers: start (ECX = player), end and mission 2/3 end (EAX = player).
+    fb, _ = sym["sa2_guest_fast_base"]
+    plan.append(f"G {fb:x} 20000000")
+    plan.append("C 1934b70 1de9600 1 5b")
+    for cid, va in ((0, 0x1746F20), (1, 0x17472C0), (4, 0x17475D8), (5, 0x17478F0), (6, 0x1748008), (7, 0x1747C40)):
+        plan.append(f"T 0 {cid:x} {va:x} 2c")
+    for cid, va in ((0, 0x1748488), (1, 0x1748850), (4, 0x1748B98), (5, 0x1748EB0), (6, 0x1749568), (7, 0x17491C8)):
+        plan.append(f"T 1 {cid:x} {va:x} 2c")
+    for cid, va in ((0, 0x174A280), (1, 0x174A3A0), (4, 0x174A460), (5, 0x174A540), (6, 0x174A6E0), (7, 0x174A600)):
+        plan.append(f"T 2 {cid:x} {va:x} 20")
+    plan.append("P 1 0")
+    plan.append("P 0 1")
+    for va, kind, preg, label in ((0x43D8E0, 0, 0x8C8, "start position"), (0x43DF30, 1, 0x8A8, "end position"),
+                                  (0x43DD50, 2, 0x8A8, "mission 2/3 end position")):
+        v, s_ = fn(va)
+        plan.append(f"W {v:x} {s_:x} {kind:x} {preg:x} {expect(va)} {label}")
+    plan_text = ("\n".join(plan) + "\n").encode()
+    given = len(sys.argv) > 3
+    if given:
+        plan_text = open(sys.argv[3], "rb").read()
+        print("using the plan", sys.argv[3])
+
+    uc, end = machine(game, patch)
+    maps = (f"{GAME_BASE:x}-{GAME_BASE + 0x2d4000:x} r--p 00000000 fd:05 1234 /data/app/~~x==/com.yuriaaaaa.opensa2-y==/lib/arm64/libsa2game.so\n"
+            f"{GAME_BASE + 0x2d7000:x}-{GAME_BASE + 0x8ddc000:x} r-xp 002d3000 fd:05 1234 /data/app/~~x==/com.yuriaaaaa.opensa2-y==/lib/arm64/libsa2game.so\n"
+            f"{PATCH_BASE:x}-{PATCH_BASE + 0x1000:x} r--p 00000000 fd:05 99 /data/app/~~x==/com.yuriaaaaa.opensa2-y==/lib/arm64/libopensa2patch.so\n").encode()
+    files = {
+        "/proc/self/environ": b"PATH=/system/bin\0OPENSA2_PATCHES=" + PLAN.encode() + b"\0LD_PRELOAD=x\0",
+        "/proc/self/maps": maps,
+        "/proc/self/auxv": struct.pack("<8Q", 3, GAME_BASE + 0x40, 6, 4096, 9, GAME_BASE + 0x2d7660, 0, 0),
+        PLAN: plan_text,
+    }
+    sc = Sys(uc, files)
+    uc.hook_add(UC_HOOK_INTR, sc.hook)
+    init_array = patch.dyn[25]
+    ctor = u64(bytes(uc.mem_read(PATCH_BASE + init_array, 8)), 0)
+    run_function(uc, ctor, limit=50_000_000, want_trace=False)
+    print(f"constructor returned to {uc.reg_read(UC_ARM64_REG_PC):#x} (STOP is {STOP:#x})")
+    print(sc.err.decode(), end="")
+    ok = True
+
+    def check(cond, what):
+        nonlocal ok
+        print(("PASS " if cond else "FAIL ") + what)
+        ok &= bool(cond)
+
+    log = sc.err.decode()
+    if given:
+        n = sum(1 for l in plan_text.decode().splitlines() if l[:2] in ("R ", "W "))
+        check(f"{n} of {n} patch(es) applied" in log, f"the launcher's plan: all {n} applied")
+        given_checks(uc, game, sc, fn, check)
+        print("ALL PASS" if ok else "SOME FAILED")
+        return 0 if ok else 1
+    check("9 of 10 patch(es) applied" in log, "the summary line")
+    check("skipped bad bytes are refused" in log, "a redirect whose bytes differ is refused")
+    exec_flips = [m for m in sc.mprotects if m[2] == 7]
+    check(all(m[0] & 0xFFF == 0 for m in sc.mprotects), "every mprotect is page aligned")
+    check(len(exec_flips) >= 5, "entries opened R+W+X (never dropping X)")
+
+    # 1. Disable Music: the ret template's effect, through the stub.
+    music, _ = fn(0x442CF0)
+    ret_fn, _ = fn(0x6FE430)
+    # guest memory: GOT entry -> variable holding the guest base
+    got_slot = None
+    gb_var = None
+    # find the guest base variable: __remill_read_memory_32 reads [[adrp page + 0xeb0]]
+    r32, _ = sym["__remill_read_memory_32"]
+    code = game.b[game.vaddr_to_off(r32):game.vaddr_to_off(r32) + 0x30]
+    for k in range(0, 0x30, 4):
+        w = u32(code, k)
+        if (w & 0x9F000000) == 0x90000000:
+            immlo, immhi = (w >> 29) & 3, (w >> 5) & 0x7FFFF
+            imm = ((immhi << 2) | immlo)
+            if imm & (1 << 20):
+                imm -= 1 << 21
+            page = ((r32 + k) & ~0xFFF) + (imm << 12)
+            w2 = u32(code, k + 4)
+            off = ((w2 >> 10) & 0xFFF) * 8
+            got_slot = page + off
+            break
+    gb_var = u64(bytes(uc.mem_read(GAME_BASE + got_slot, 8)), 0)
+    uc.mem_map(GUEST + 0x1F0000, 0x20000, UC_PROT_READ | UC_PROT_WRITE)
+    uc.mem_write(gb_var, struct.pack("<Q", GUEST))
+    esp = 0x200000
+    st = bytearray(0x1000)
+    struct.pack_into("<I", st, 0x908, esp)          # ESP
+    struct.pack_into("<I", st, 0x848, 0)            # SS base
+    uc.mem_write(STATE, bytes(st))
+    uc.mem_write(GUEST + esp, struct.pack("<I", 0x00401234))
+    trace = run_function(uc, GAME_BASE + music, STATE, 0x442CF0, 0)
+    s2 = bytes(uc.mem_read(STATE, 0x1000))
+    check(u32(s2, 0x908) == esp + 4 and u32(s2, 0x9A8) == 0x401234,
+          f"sub_442cf0 now returns at once (ESP {u32(s2, 0x908):#x}, EIP {u32(s2, 0x9A8):#x})")
+    check(GAME_BASE + ret_fn in trace, "and it ran the ret function's body")
+    check(not any(GAME_BASE + music + 16 <= a < GAME_BASE + music + 0x400 for a in trace), "and none of its own")
+
+    # 2. LoadSonic -> LoadShadow, with LoadShadow itself patched (a swap): through the trampoline.
+    sonic, _ = fn(0x716E00)
+    shadow, _ = fn(0x717360)
+    ref, _ = machine(game)          # an unpatched machine for the reference run
+    for m in (uc, ref):
+        reset(m)
+    run_function(ref, GAME_BASE + shadow, STATE, 0x717360, 0x77, until=GAME_BASE + shadow + 16)
+    trace = run_function(uc, GAME_BASE + sonic, STATE, 0x716E00, 0x77, until=GAME_BASE + shadow + 16)
+    regs = [UC_ARM64_REG_SP, UC_ARM64_REG_X0, UC_ARM64_REG_X2, UC_ARM64_REG_X29, UC_ARM64_REG_X30]
+    same = all(uc.reg_read(r) == ref.reg_read(r) for r in regs)
+    if not same:
+        print("  differ:", [(r, hex(uc.reg_read(r)), hex(ref.reg_read(r))) for r in regs if uc.reg_read(r) != ref.reg_read(r)])
+    sp = uc.reg_read(UC_ARM64_REG_SP)
+    stack_same = bytes(uc.mem_read(sp, 0xd0)) == bytes(ref.mem_read(sp, 0xd0))
+    check(uc.reg_read(UC_ARM64_REG_PC) == GAME_BASE + shadow + 16, "LoadSonic reaches LoadShadow's body")
+    check(same and stack_same, "with the registers and stack LoadShadow's own entry would have made")
+    check(uc.reg_read(UC_ARM64_REG_X1) & 0xFFFFFFFF == 0x717360, "and pc (w1) set to LoadShadow's guest address")
+    check(not any(GAME_BASE + shadow <= a < GAME_BASE + shadow + 16 for a in trace), "without running LoadShadow's patched entry")
+
+    # 3. LoadShadow -> LoadSonic (the other half of the swap).
+    ref2, _ = machine(game)
+    run_function(ref2, GAME_BASE + sonic, STATE, 0x716E00, 0x77, until=GAME_BASE + sonic + 16)
+    run_function(uc, GAME_BASE + shadow, STATE, 0x717360, 0x77, until=GAME_BASE + sonic + 16)
+    check(uc.reg_read(UC_ARM64_REG_PC) == GAME_BASE + sonic + 16 and uc.reg_read(UC_ARM64_REG_SP) == ref2.reg_read(UC_ARM64_REG_SP),
+          "LoadShadow reaches LoadSonic's body")
+
+    # 4. Knuckles -> Tikal (Tikal not patched: straight to its entry).
+    knux, _ = fn(0x728110)
+    tikal, _ = fn(0x7288B0)
+    run_function(uc, GAME_BASE + knux, STATE, 0x728110, 0x77, until=GAME_BASE + tikal)
+    check(uc.reg_read(UC_ARM64_REG_PC) == GAME_BASE + tikal and uc.reg_read(UC_ARM64_REG_X1) & 0xFFFFFFFF == 0x7288B0,
+          "LoadKnuckles goes to LoadTikal's entry with pc 0x7288b0")
+
+    # 5. ADRP relocation: the redirect into sub_80f95d runs its moved adrp right.
+    f80, _ = fn(0x80F95D)
+    src = 0x6FE440 if "sub_6fe440" in sym else 0x442CF0
+    srcv, _ = fn(src)
+    ref3, _ = machine(game)
+    reset(ref3)
+    reset(uc)
+    run_function(ref3, GAME_BASE + f80, STATE, 0x80F95D, 0x77, until=GAME_BASE + f80 + 16)
+    if src == 0x442CF0:
+        print("note: the adrp test shares sub_442cf0 (the first redirect wins), skipped")
+    else:
+        run_function(uc, GAME_BASE + srcv, STATE, src, 0x77, until=GAME_BASE + f80 + 16)
+        diffs = [r for r in range(UC_ARM64_REG_X0, UC_ARM64_REG_X0 + 29)
+                 if r not in (UC_ARM64_REG_X1, UC_ARM64_REG_X16) and uc.reg_read(r) != ref3.reg_read(r)]
+        check(uc.reg_read(UC_ARM64_REG_PC) == GAME_BASE + f80 + 16 and not diffs,
+              f"a moved adrp computes the same page (sub_80f95d; differing registers: {diffs})")
+
+    # 6. The start position wrapper around the game's own LoadStartPosition (sub_43d8e0).
+    def guest_setup(m, charid, level):
+        for a, n in ((0x1746000, 0x5000), (0x1934000, 0x1000), (0x1DE9000, 0x2000), (0x1000000, 0x2000), (0x300000, 0x1000)):
+            try:
+                m.mem_map(GUEST + a, n, UC_PROT_READ | UC_PROT_WRITE)
+            except UcError:
+                pass
+            m.mem_write(GUEST + a, bytes(n))
+        try:
+            m.mem_map(GUEST + 0x1F0000, 0x20000, UC_PROT_READ | UC_PROT_WRITE)
+        except UcError:
+            pass
+        m.mem_write(gb_var, struct.pack("<Q", GUEST))
+        def start(level, rot, x, y, z):
+            return struct.pack("<hHHH9f", level, rot, rot, rot, x, y, z, x, y, z, x, y, z)
+        inval = struct.pack("<h", 0x5B) + bytes(42)
+        for a in (0x17475D8, 0x17478F0, 0x1747BE8, 0x1747C40, 0x1748008, 0x1748378, 0x1748400, 0x1748488, 0x1748850,
+                  0x1748B98, 0x1748EB0, 0x17491C8, 0x1749568, 0x17498B0, 0x1749938, 0x174A280, 0x174A3A0, 0x174A460,
+                  0x174A540, 0x174A600, 0x174A6E0):
+            m.mem_write(GUEST + a, struct.pack("<h", 0x5B))
+        m.mem_write(GUEST + 0x1746F20, start(13, 0x4000, 1.0, 2.0, 3.0) + inval)        # Sonic: City Escape
+        m.mem_write(GUEST + 0x17472C0, start(16, 0x8000, 7.0, 8.0, 9.0) + inval)        # Shadow: Radical Highway
+        m.mem_write(GUEST + 0x1934B70, struct.pack("<h", level))
+        m.mem_write(GUEST + 0x1DE9600, struct.pack("<I", 0x1000000))                   # MainCharObj2[0]
+        m.mem_write(GUEST + 0x1DEA6E0, struct.pack("<I", 0x1001000))                   # MainCharacter[0]
+        m.mem_write(GUEST + 0x1000000, bytes([0, charid, 0, charid]))
+        st = bytearray(0x1000)
+        struct.pack_into("<I", st, 0x908, 0x200000)
+        struct.pack_into("<I", st, 0x8C8, 0)            # ECX: player 0
+        struct.pack_into("<I", st, 0x8F8, 0x300000)     # EDI: the position
+        m.mem_write(STATE, bytes(st))
+        m.mem_write(GUEST + 0x200000, struct.pack("<II", 0x00401234, 0x300100))   # return, rotation
+        m.mem_write(GUEST + 0x300000, struct.pack("<3f", 99.0, 99.0, 99.0))
+        m.mem_write(GUEST + 0x300100, struct.pack("<3i", 7, 7, 7))
+        try:
+            m.mem_map(GUEST + 0x8AF000, 0x1000, UC_PROT_READ | UC_PROT_WRITE)
+        except UcError:
+            pass
+        m.mem_write(GUEST + 0x8AF004, struct.pack("<f", 0.0))     # .rdata: the 0.0f the position is cleared with
+
+    def start_result(m):
+        st = bytes(m.mem_read(STATE, 0x1000))
+        pos = struct.unpack("<3f", bytes(m.mem_read(GUEST + 0x300000, 12)))
+        rot = struct.unpack("<3i", bytes(m.mem_read(GUEST + 0x300100, 12)))
+        cid = bytes(m.mem_read(GUEST + 0x1000001, 1))[0]
+        return pos, rot, cid, u32(st, 0x908), u32(st, 0x9A8), u32(st, 0x8A8)
+
+    lsp, _ = fn(0x43D8E0)
+    ref4, _ = machine(game)
+    bring_up(ref4, game)
+    bring_up(uc, game)
+    gb4 = u64(bytes(ref4.mem_read(GAME_BASE + got_slot, 8)), 0)
+    assert gb4 == gb_var
+    guest_setup(ref4, 1, 13)
+    run_function(ref4, GAME_BASE + lsp, STATE, 0x43D8E0, 0, limit=2_000_000)
+    r_ref = start_result(ref4)
+    print("  unpatched game, Shadow in City Escape:", r_ref)
+    check(r_ref[0] == (0.0, 0.0, 0.0) and r_ref[3] == 0x200004 and r_ref[4] == 0x401234,
+          "the game's own LoadStartPosition finds nothing for Shadow in City Escape (it reads the tables named)")
+    guest_setup(ref4, 0, 13)
+    run_function(ref4, GAME_BASE + lsp, STATE, 0x43D8E0, 0, limit=2_000_000)
+    r_ref0 = start_result(ref4)
+    check(r_ref0[0] == (1.0, 2.0, 3.0) and r_ref0[1][1] == 0x4000,
+          f"and finds Sonic's City Escape start for Sonic {r_ref0[:2]}")
+    guest_setup(uc, 1, 13)
+    run_function(uc, GAME_BASE + lsp, STATE, 0x43D8E0, 0, limit=2_000_000)
+    r = start_result(uc)
+    print("  patched game, Shadow in City Escape:", r)
+    check(r[0] == (1.0, 2.0, 3.0) and r[1][1] == 0x4000, "with the wrapper, Shadow starts at Sonic's City Escape start")
+    check(r[2] == 1 and r[3] == 0x200004 and r[4] == 0x401234 and r[5] == r_ref0[5],
+          "and CharID is Shadow again after, the call returned normally, EAX as the game's")
+    guest_setup(uc, 1, 16)
+    run_function(uc, GAME_BASE + lsp, STATE, 0x43D8E0, 0, limit=2_000_000)
+    r = start_result(uc)
+    check(r[0] == (7.0, 8.0, 9.0) and r[2] == 1, "Shadow in his own level keeps his own start")
+    guest_setup(uc, 4, 13)
+    run_function(uc, GAME_BASE + lsp, STATE, 0x43D8E0, 0, limit=2_000_000)
+    r = start_result(uc)
+    check(r[0] == (0.0, 0.0, 0.0) and r[2] == 4, "a character with no partner is left alone")
+
+    # 7. The end-position wrappers swap CharID for the game's call (stopped at the body's start).
+    for va, preg, table, label in ((0x43DF30, 0x8A8, 0x1748488, "end position"), (0x43DD50, 0x8A8, 0x174A280, "mission 2/3 end")):
+        f_, _ = fn(va)
+        guest_setup(uc, 1, 13)
+        uc.mem_write(GUEST + 0x1748488, struct.pack("<h", 13) + bytes(42) + struct.pack("<h", 0x5B))
+        uc.mem_write(GUEST + 0x174A280, struct.pack("<h", 13) + bytes(30) + struct.pack("<h", 0x5B))
+        uc.mem_write(GUEST + 0x1748850, struct.pack("<h", 0x5B))
+        uc.mem_write(GUEST + 0x174A3A0, struct.pack("<h", 0x5B))
+        st = bytearray(uc.mem_read(STATE, 0x1000))
+        struct.pack_into("<I", st, 0x8A8, 0)
+        uc.mem_write(STATE, bytes(st))
+        run_function(uc, GAME_BASE + f_, STATE, va, 0, until=GAME_BASE + f_ + 16)
+        cid = bytes(uc.mem_read(GUEST + 0x1000001, 1))[0]
+        check(cid == 0, f"{label}: the game's body runs with CharID Sonic for Shadow in City Escape")
+
+    print("ALL PASS" if ok else "SOME FAILED")
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

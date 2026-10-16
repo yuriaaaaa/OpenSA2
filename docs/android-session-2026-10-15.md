@@ -120,3 +120,119 @@ versionName `0.1.1-opensa2`, versionCode `10200`.
 - **7z**: BCJ2, AES-encrypted and RAR archives are refused with a message to re-save as `.zip`/`.7z`.
 - **DLL behaviour** (chest jiggle etc.) is not reimplemented — it is x86 the recompiled game can't
   run. A future option is to port a specific DLL's effect to native code if one matters.
+
+---
+
+# Second session (2026-10-16): GameBanana browsing, texture packs, native patches
+
+Asked for: search and download GameBanana mods inside the app; make the user's mods work
+(Character Select Plus, Extra Chao Garden, Shady the Hedgehog, Sonikko); "mimic the DLL stuff"
+where possible; the stage-select code ("All Stages Appear in Stage Select") did nothing; Extra
+Chao Garden played its music but not its textures. Version 0.1.2-opensa2 / 10300.
+
+## What the DLL question came down to (read this before trying again)
+
+- The lifted game calls functions **directly** (`bl sub_<va>`), not only through the runtime's
+  function table: `sub_442cf0` (PlayMusic) has 133 direct native callers. Replacing a table entry
+  (`sa2_ft_add`) therefore misses most calls. A hook has to patch the **native entry** of
+  `sub_<va>` in `libsa2game.so`.
+- Guest `.text` is filled with `int3` except the overlay runs (`runtime/sa2_exe_overlay.h`), and
+  nothing reads it as code, so x86 bytes written there (a code-list `Patch`, a DLL's
+  `WriteData`/`WriteJump`) change nothing.
+- What can be reproduced: changes to a **whole function from its first byte** — `ret` at an
+  entry, a jump from one entry to another, a wrapper around a function. What cannot: patches in
+  the middle of a function. Of `Codes.lst`, 4 patches are whole-function (Disable Music, Disable
+  Voices, Disable Loading Tips, Disable Fire Somersault Effects); 24 are mid-function, including
+  **All Stages Appear in Stage Select** (`write32 006773BC`, inside `StageMapExec_Main` 0x677350,
+  probably a `setcc bl` forced to `mov bl,1`; its lifted body is 23 KB of optimised ARM64 with
+  state kept in registers, so there is no safe native equivalent without the original bytes).
+- **Character Select Plus** (Justin113D, no licence file — nothing copied) is ~60 patches, most
+  mid-function (`WriteData` nops/short jumps, `WriteJump`s into the middle of functions, a
+  `FastFunctionHook` on GoalRing_Main). Its menu cannot run. Its core effect — playing stages as
+  other characters — is reproduced instead by redirecting the `Load<Character>` functions (all
+  `void(int player)`, cdecl) and wrapping the position lookups (below): the **Characters** screen.
+- **Extra Chao Garden** builds a fourth garden in code (its README §8): new texture lists
+  (`al_stg_twilight_tex`, `al_toy_tw`) that only its DLL loads, save juggling, a lobby door.
+  Without the DLL its `gd_PC` files (music, light, set layout, a `.prs` texture archive the game's
+  `.pak` outranks) land on the Neutral Garden — hence music but no textures. The mod list now says
+  to leave it off.
+- Jiggle DLLs are cosmetic; a native port would need new code calling game functions — possible
+  with the helper's wrapper mechanism, not attempted.
+- `rea` (the reverse-engineering MCP the user found) wraps Ghidra/IDA/Hopper; the mod manager and
+  loader are open source, so there was nothing to reverse there, and the binary that matters
+  (`sonic2app.exe`) is the user's.
+
+## Native patch helper (new)
+
+`host/android/native/opensa2_patch.c` → `lib/arm64-v8a/libopensa2patch.so`, freestanding (raw
+syscalls, no libc, no exported symbols), built by `build_apk.py` with `--ndk`'s clang or a
+system `clang` + `ld.lld`. `NativePatch.java` reads `libsa2game.so`'s `.symtab` (24,037
+`sub_<va>` functions), makes a plan (`files/native-patches.txt`), and `Sa2Activity.onCreate`
+sets `LD_PRELOAD` + `OPENSA2_PATCHES` before SDL starts the session (the session copies its
+environment into the game's; `SA2_` variables are the only ones it drops). In the game process,
+before `main`, the helper:
+
+1. finds `libsa2game.so`'s base in `/proc/self/maps` (does nothing in any other program);
+2. checks each patched entry's first 16 bytes against the plan;
+3. builds trampolines (first 4 instructions relocated — ADR/ADRP rewritten, branches/literal
+   loads refused; 99.8% of lifted prologues qualify) and stubs in an anonymous page (RW → RX);
+4. writes `ldr x16,#8; br x16; .quad stub` over each entry, taking the page RX → RWX → RX (never
+   dropping X, so only `execmem` is needed, not `execmod`).
+
+Plan lines: `R` redirect (stub sets `w1` = target VA, jumps to the target or its trampoline, so
+swaps A↔B work), `W` wrapper, `G` the guest-memory base pointer (`sa2_guest_fast_base`), `C`
+CurrentLevel/MainCharObj2/CharID offset/invalid level, `T` per-character position tables, `P`
+partners. remill `State` offsets used: EAX 0x8A8, ECX 0x8C8, ESP 0x908, EIP 0x9A8, SS base 0x848,
+DS base 0x888.
+
+**Character swap wrappers.** `LoadStartPosition` (0x43D8E0, player in ECX), the end position
+(0x43DF30, EAX) and the mission 2/3 end (0x43DD50, EAX) pick a table by
+`CharObj2Base.CharID` (offset 1). When the stand-in's table lacks the current level and its
+partner's has it, the wrapper sets CharID to the partner's for the length of the game's own call.
+Alt characters (Amy, Metal Sonic, Tikal, Chaos, Chao Walkers) share their base character's CharID.
+Tables are the Steam exe's (`SA2Variables.h`: `SonicStartArray` 0x1746F20 …).
+
+**Tested (emulator, `tools/opensa2_android/emu_patch_helper.py`, unicorn):** the helper runs
+against the real release `libsa2game.so`; a refused bad-bytes entry; `sub_442cf0` returning at
+once through the ret function (ESP+4, EIP = return address); LoadSonic↔LoadShadow both ways
+reaching the other body with identical registers and stack to a direct call; a moved ADRP; and
+the game's **own lifted LoadStartPosition** (function table brought up with `sa2_ft_init` +
+`sa2_ft_register_generated`, the release's `.text` overlay written into guest memory) — unpatched
+it finds nothing for Shadow in City Escape, patched it returns Sonic's start, restores CharID,
+returns normally. The Java planner's plan for the real `Codes.lst` + swaps was fed to the helper:
+10 of 10 applied, all checks pass.
+
+**Not tested — check on the phone first** (game.log / the session report's "Native patches:"
+lines): that Android loads an `LD_PRELOAD` library from the app's lib folder for the game
+process (the linker namespace), and that `mprotect` to RWX on the game's code is allowed
+(`execmem`). If either fails the helper (or the linker) says so and the game runs unpatched.
+Then: Disable Music on → silence; Characters: Sonic → Shadow, play City Escape → Shadow at the
+start line; finish a stage → normal results; Knuckles → Tikal in Pumpkin Hill.
+
+## Other changes
+
+- **GameBanana browse/search** (`GbBrowseActivity`, `GameBanana.search/browse`, apiv11
+  `Util/Search/Results` and `Game/5855/Subfeed`): newest mods on open, search box, thumbnails,
+  tap → confirm → download + install with a progress log; a link/id/`sa2mm:` in the box installs
+  directly. Checked live against the API.
+- **Texture packs** (`TexturePack.java`): `textures/<name>/index.txt` or `.pvmx` → the game's
+  `PRS/<name>.pak` (inf rows: name, gbix, size from the index's `WxH` or the image; flags
+  0x80000000; images stored as `<name>\<tex>.dds` whatever the format, as SA Tools does); the
+  game's remaining textures kept by position; packs for lists the game lacks are skipped with a
+  note.
+- **Codes screen** shows under each code that writes the game's program whether it works here.
+  `CodeEngine` says "applied at the start by the native helper" for those instead of "skipped".
+- **Mod list**: known DLLs explained (jiggle, Character Select Plus, Extra Chao Garden).
+- Shady the Hedgehog's model folders build and verify (sshadowmdl 58/58, teriosmdl 76/76, 0
+  mismatches against the sources).
+
+## Ideas not done
+
+- A native port of a jiggle DLL: a `W` wrapper around the character display function that runs
+  new C code calling lifted functions (push args/return address on the guest stack, call the
+  native function with the live State) — the mechanism is in place, the physics is not.
+- Stage select: find the ARM64 equivalent of 0x6773BC by lifting a patched `sonic2app.exe`
+  through the project's own pipeline and diffing `sub_677350`, then patch that native
+  instruction from the plan (an `X <off> <bytes>` plan line would be easy to add).
+- Cross-play-style swaps (Sonic in a Knuckles stage) need what Character Select Plus patches
+  mid-function (goal ring, emerald manager); not offered.

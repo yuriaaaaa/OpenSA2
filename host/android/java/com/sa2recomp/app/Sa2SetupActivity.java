@@ -91,7 +91,9 @@ public class Sa2SetupActivity extends Activity {
                 Ui.button(this, "Mods", v -> startActivity(new Intent(this, ModsActivity.class))),
                 Ui.button(this, "Codes", v -> startActivity(new Intent(this, CodesActivity.class)))));
         col.addView(Ui.row(this,
-                Ui.button(this, "Settings", v -> startActivity(new Intent(this, SettingsActivity.class))),
+                Ui.button(this, "Characters", v -> startActivity(new Intent(this, CharactersActivity.class))),
+                Ui.button(this, "Settings", v -> startActivity(new Intent(this, SettingsActivity.class)))));
+        col.addView(Ui.row(this,
                 Ui.button(this, "Touch layout", v -> startActivity(new Intent(this, TouchEditorActivity.class)))));
         mLog = Ui.text(this, "", 11, 0xFFA8B4C8);
         mLog.setTypeface(Typeface.MONOSPACE);
@@ -177,6 +179,8 @@ public class Sa2SetupActivity extends Activity {
                     say("Could not bring in saves from Internal storage/OpenSA2/saves: " + e.getMessage());
                 }
                 ModManager.apply(this, root, this::say);
+                NativePatch.Plan np = NativePatch.prepare(this);
+                for (String l : np.said) say(l);
                 OpenSa2.writeGameEnv(this);
             } catch (Exception e) {
                 fail = e.getMessage() == null ? e.toString() : e.getMessage();
@@ -256,6 +260,9 @@ public class Sa2SetupActivity extends Activity {
                 b.append("The last session:\n").append(SessionLogs.publicPaths(this, last));
                 if (!last.endsWith("\n")) b.append('\n');
                 for (String l : SessionLogs.why(newest, last)) b.append(l).append('\n');
+            }
+            if (newest != null) {
+                for (String l : NativePatch.report(new File(newest, "game.log"))) b.append("Native patches: ").append(l).append('\n');
             }
             if (out != null) b.append("Logs saved to Internal storage/OpenSA2/logs/").append(out.getName()).append("/\n");
             else if (!SessionLogs.wanted(this)) b.append("Session logs are not being saved (Settings, Save session logs).\n");

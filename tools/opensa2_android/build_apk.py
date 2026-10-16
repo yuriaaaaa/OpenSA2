@@ -16,6 +16,11 @@ icon (kept out of the repository; the default icon is host/android's). Without -
 debug key is made next to the output and reused by later builds, so updates install over each
 other.
 
+The native patch helper (host/android/native/opensa2_patch.c -> lib/arm64-v8a/libopensa2patch.so,
+code-list patches and the character swap) is one freestanding C file with no C library. It is
+built with --ndk's clang, or with a clang and ld.lld on PATH that can target
+aarch64-linux-android; without either the APK is built without it and those features say so.
+
 The APK holds recompiled game code (libsa2game.so): it is for your own use, not for sharing.
 """
 import argparse
@@ -74,6 +79,35 @@ def make_icon(src: Path, res: Path) -> None:
         '</adaptive-icon>\n')
 
 
+HELPER_SRC = ANDROID / "native" / "opensa2_patch.c"
+HELPER_FLAGS = ["--target=aarch64-linux-android29", "-O2", "-fPIC", "-fvisibility=hidden", "-ffreestanding",
+                "-fno-builtin", "-fno-stack-protector", "-fno-exceptions", "-fno-asynchronous-unwind-tables",
+                "-nostdlib", "-shared", "-fuse-ld=lld", "-Wl,-soname,libopensa2patch.so",
+                "-Wl,-z,max-page-size=16384", "-Wl,--hash-style=both", "-Wl,-z,now", "-Wl,--build-id=sha1",
+                "-Wall", "-Wextra", "-Werror"]
+
+
+def build_helper(ndk, out: Path):
+    """libopensa2patch.so, or None (with the reason printed) when no suitable clang is found."""
+    cands = []
+    if ndk:
+        cands += sorted(Path(ndk).glob("toolchains/llvm/prebuilt/*/bin/clang"))
+    env_ndk = os.environ.get("ANDROID_NDK_HOME") or os.environ.get("ANDROID_NDK_ROOT")
+    if env_ndk:
+        cands += sorted(Path(env_ndk).glob("toolchains/llvm/prebuilt/*/bin/clang"))
+    if shutil.which("clang"):
+        cands.append(Path(shutil.which("clang")))
+    for cc in cands:
+        try:
+            run([cc, *HELPER_FLAGS, "-o", out, HELPER_SRC])
+            return out
+        except (subprocess.CalledProcessError, OSError) as e:
+            print(f"note: {cc} could not build the patch helper ({e})", file=sys.stderr)
+    print("warning: no clang that targets aarch64-linux-android (with ld.lld) was found: the APK is built "
+          "without libopensa2patch.so, so code patches and character swaps will be off", file=sys.stderr)
+    return None
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--release-apk", type=Path, required=True)
@@ -82,8 +116,9 @@ def main() -> int:
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--icon", type=Path)
     ap.add_argument("--keystore", type=Path)
-    ap.add_argument("--version-name", default="0.1.1-opensa2")
-    ap.add_argument("--version-code", type=int, default=10200)
+    ap.add_argument("--ndk", type=Path, help="an Android NDK, for the native patch helper's clang")
+    ap.add_argument("--version-name", default="0.1.2-opensa2")
+    ap.add_argument("--version-code", type=int, default=10300)
     a = ap.parse_args()
 
     bt = a.sdk / "build-tools" / BUILD_TOOLS
@@ -120,7 +155,9 @@ def main() -> int:
              "--version-code", a.version_code, "--version-name", a.version_name,
              "--rename-manifest-package", PACKAGE, flat])
 
-        # The release's native libraries and assets, then the dex.
+        helper = build_helper(a.ndk, w / "libopensa2patch.so")
+
+        # The release's native libraries and assets, the patch helper, then the dex.
         unsigned = w / "unsigned.apk"
         shutil.copy(linked, unsigned)
         with zipfile.ZipFile(a.release_apk) as rel, zipfile.ZipFile(unsigned, "a") as z:
@@ -130,6 +167,9 @@ def main() -> int:
                     # Native libraries stored, as the release has them (extractNativeLibs).
                     comp = zipfile.ZIP_STORED if n.endswith(".so") else zipfile.ZIP_DEFLATED
                     z.writestr(zipfile.ZipInfo(n, date_time=info.date_time), rel.read(n), compress_type=comp)
+            if helper:
+                z.writestr(zipfile.ZipInfo("lib/arm64-v8a/libopensa2patch.so", date_time=(2026, 1, 1, 0, 0, 0)),
+                           helper.read_bytes(), compress_type=zipfile.ZIP_STORED)
             z.write(dex / "classes.dex", "classes.dex", compress_type=zipfile.ZIP_DEFLATED)
         aligned = w / "aligned.apk"
         run([bt / "zipalign", "-f", "-p", "4", unsigned, aligned])

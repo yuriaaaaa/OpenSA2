@@ -45,6 +45,7 @@ final class CodeEngine {
     private long[][] exec = new long[0][];          // executable sections, guest [start, end)
     private final Set<String> warned = new HashSet<>();
     private final Set<CodeList.Code> patched = new HashSet<>();
+    private volatile Set<String> nativeCodes = new HashSet<>();
     private final List<long[]> regs = new ArrayList<>();
     private String state = "waiting for the game";
 
@@ -60,6 +61,11 @@ final class CodeEngine {
         synchronized (log) {
             return new ArrayList<>(log);
         }
+    }
+
+    /** Codes whose writes into the game's code the native helper made at the start (NativePatch). */
+    void setNative(List<String> names) {
+        nativeCodes = new HashSet<>(names);
     }
 
     /** The codes to run (enabled ones and required ones); takes effect at the next frame. */
@@ -263,7 +269,10 @@ final class CodeEngine {
         }
         if (a < 0x1000 || a + width / 8 > GUEST_END) return;
         if (inCode(a)) {
-            if (warned.add(c.name)) say("skipped (changes x86 code, which the recompiled game does not run): " + c.name);
+            if (warned.add(c.name)) {
+                if (nativeCodes.contains(c.name)) say("in the game's code, applied at the start by the native helper: " + c.name);
+                else say("skipped (changes x86 code mid-function, which the recompiled game cannot take): " + c.name);
+            }
             return;
         }
         byte[] b = new byte[width / 8];
@@ -349,7 +358,10 @@ final class CodeEngine {
     private void step(CodeList.Code c, CodeList.Line l, long a) throws IOException {
         switch (l.base) {
             case "nop":
-                if (warned.add(c.name)) say("skipped (changes x86 code, which the recompiled game does not run): " + c.name);
+                if (warned.add(c.name)) {
+                    if (nativeCodes.contains(c.name)) say("in the game's code, applied at the start by the native helper: " + c.name);
+                    else say("skipped (changes x86 code mid-function, which the recompiled game cannot take): " + c.name);
+                }
                 return;
             case "conv": {
                 long v = rd(a, 32);

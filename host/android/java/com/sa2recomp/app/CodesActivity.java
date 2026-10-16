@@ -26,14 +26,17 @@ public class CodesActivity extends Activity {
     private LinearLayout mList;
     private TextView mStatus;
     private Set<String> mOn;
+    /** For codes that write into the game's program code: what happens to that part. */
+    private final java.util.Map<String, String[]> mSupport = new java.util.HashMap<>();
 
     @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
         LinearLayout col = Ui.screen(this, "Codes");
         col.addView(Ui.text(this, "The mod loader's cheats and patches. Codes run every frame while you play; "
-                + "Patches run once at the start. Patches that change the game's program code cannot apply in "
-                + "this port (it is recompiled), so a few do nothing: the debug info lists them. "
+                + "Patches run once at the start. This port is recompiled, so a patch to the game's program code "
+                + "works only when it turns off or redirects a whole function (applied at the start of the next "
+                + "Play); one that changes instructions in the middle of a function cannot work, and says so below. "
                 + "Three-finger tap in game switches codes live.", 13, 0xFFA8B4C8));
         col.addView(Ui.row(this, Ui.button(this, "Download code list", v -> download())));
         mStatus = Ui.text(this, "", 13, OpenSa2.GOLD);
@@ -42,6 +45,30 @@ public class CodesActivity extends Activity {
         mList.setOrientation(LinearLayout.VERTICAL);
         col.addView(mList);
         load();
+        checkSupport();
+    }
+
+    /** Which codes' program-code writes the native helper can reproduce (NativePatch.support). */
+    private void checkSupport() {
+        new Thread(() -> {
+            NativePatch.Lib lib = NativePatch.lib(this);
+            if (lib == null || !OpenSa2.haveStorage()) return;
+            long[][] code = NativePatch.codeRanges();
+            boolean helper = new File(getApplicationInfo().nativeLibraryDir, NativePatch.HELPER).isFile();
+            java.util.Map<String, String[]> out = new java.util.HashMap<>();
+            for (CodeList.Code c : ModManager.allCodes(this, new ArrayList<>())) {
+                NativePatch.CodeSupport s = NativePatch.support(lib, c, code);
+                if (!s.touchesCode) continue;
+                if (s.why != null) out.put(ModManager.codeKey(c), new String[] {"no", "Cannot work in this port: " + s.why + "."});
+                else if (!helper) out.put(ModManager.codeKey(c), new String[] {"no", "Needs " + NativePatch.HELPER + ", which this build lacks."});
+                else out.put(ModManager.codeKey(c), new String[] {"yes", "Works here: applied at the start of the next Play."});
+            }
+            runOnUiThread(() -> {
+                mSupport.clear();
+                mSupport.putAll(out);
+                load();
+            });
+        }).start();
     }
 
     private void load() {
@@ -78,6 +105,8 @@ public class CodesActivity extends Activity {
             String about = c.description.isEmpty() ? "" : c.description;
             if (!c.author.isEmpty()) about += (about.isEmpty() ? "" : "  ") + "by " + c.author;
             if (!about.isEmpty()) mList.addView(Ui.text(this, about, 12, 0xFFA8B4C8));
+            String[] sup = mSupport.get(key);
+            if (sup != null) mList.addView(Ui.text(this, sup[1], 12, sup[0].equals("yes") ? 0xFF8FE08F : 0xFFFF9C7A));
         }
         for (int i = 0; i < Math.min(errors.size(), 10); i++) mList.addView(Ui.text(this, errors.get(i), 11, 0xFFFF8080));
     }

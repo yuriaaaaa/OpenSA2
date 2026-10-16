@@ -30,10 +30,77 @@ final class GameBanana {
     private GameBanana() {}
 
     static final String SCHEME = "sa2mm";
+    /** Sonic Adventure 2 on GameBanana (gamebanana.com/games/5855). */
+    static final int GAME_ID = 5855;
     private static final int MAX_BYTES = 400 << 20;
 
     interface Progress {
         void line(String s);
+    }
+
+    /** A mod in a search or browse result. */
+    static final class Item {
+        long id;
+        String name = "", author = "";
+        long dateAdded;
+        boolean hasFiles;
+        String thumbUrl;      // a small preview image, when the mod has one
+
+        String subtitle() {
+            StringBuilder b = new StringBuilder();
+            if (!author.isEmpty()) b.append("by ").append(author);
+            if (dateAdded > 0) {
+                if (b.length() > 0) b.append("  ·  ");
+                b.append(new java.text.SimpleDateFormat("d MMM yyyy", java.util.Locale.ROOT)
+                        .format(new java.util.Date(dateAdded * 1000L)));
+            }
+            return b.toString();
+        }
+    }
+
+    /** SA2 mods whose name/description matches `query`, a page (15) at a time (page from 1). */
+    static List<Item> search(String query, int page) throws IOException {
+        String q = java.net.URLEncoder.encode(query, "UTF-8");
+        return items(getJson("https://gamebanana.com/apiv11/Util/Search/Results?_sModelName=Mod"
+                + "&_sSearchString=" + q + "&_idGameRow=" + GAME_ID + "&_nPage=" + Math.max(1, page)));
+    }
+
+    /** SA2 mods by newest (`sort` = "new") or GameBanana's default order, a page at a time. */
+    static List<Item> browse(int page, String sort) throws IOException {
+        String s = "new".equals(sort) ? "&_sSort=new" : "";
+        return items(getJson("https://gamebanana.com/apiv11/Game/" + GAME_ID + "/Subfeed?_nPage="
+                + Math.max(1, page) + "&_csvModelInclusions=Mod" + s));
+    }
+
+    private static List<Item> items(JSONObject page) {
+        List<Item> out = new ArrayList<>();
+        JSONArray recs = page.optJSONArray("_aRecords");
+        if (recs == null) return out;
+        for (int i = 0; i < recs.length(); i++) {
+            JSONObject r = recs.optJSONObject(i);
+            if (r == null || !"Mod".equals(r.optString("_sModelName", "Mod"))) continue;
+            Item it = new Item();
+            it.id = r.optLong("_idRow");
+            it.name = r.optString("_sName", "mod " + it.id);
+            it.dateAdded = r.optLong("_tsDateAdded");
+            it.hasFiles = r.optBoolean("_bHasFiles", true);
+            JSONObject sub = r.optJSONObject("_aSubmitter");
+            if (sub != null) it.author = sub.optString("_sName", "");
+            it.thumbUrl = thumb(r.optJSONObject("_aPreviewMedia"));
+            if (it.id != 0) out.add(it);
+        }
+        return out;
+    }
+
+    private static String thumb(JSONObject media) {
+        if (media == null) return null;
+        JSONArray imgs = media.optJSONArray("_aImages");
+        if (imgs == null || imgs.length() == 0) return null;
+        JSONObject im = imgs.optJSONObject(0);
+        if (im == null) return null;
+        String baseUrl = im.optString("_sBaseUrl", "");
+        String file = im.optString("_sFile220", im.optString("_sFile100", im.optString("_sFile", "")));
+        return baseUrl.isEmpty() || file.isEmpty() ? null : baseUrl + "/" + file;
     }
 
     /** What a request resolves to. */

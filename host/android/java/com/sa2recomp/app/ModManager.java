@@ -42,9 +42,13 @@ import java.util.Set;
  * Paths a mod.ini names (IncludeDir, [ReplaceFiles], Codes) stay inside the mod and game
  * folders: a path that climbs out ("..") or is absolute is refused.
  *
+ * The loader's texture packs (textures/<name>/ with an index.txt, or textures/<name>.pvmx) are
+ * written as the PAK archive the game reads for that texture list (TexturePack), also once per
+ * change, in files/modbuild/.
+ *
  * What cannot work, and is shown on the mod: DLL mods (Windows x86 code), EXEData/DLLData
- * (data the loader patches into the program's memory at start), and the loader's texture-pack
- * folders (textures/, replacetex/: loose images the loader's Direct3D hook swaps in).
+ * (data the loader patches into the program's memory at start), replacetex/ (loose images the
+ * loader's Direct3D hook swaps in by name), and texture packs for a texture list only a DLL loads.
  */
 final class ModManager {
 
@@ -56,7 +60,8 @@ final class ModManager {
         final List<File> roots = new ArrayList<>();      // the mod folder and its IncludeDirs
         final Map<String, String> replaceFiles = new LinkedHashMap<>();
         int files;                                        // gd_PC files found
-        boolean textures;
+        boolean replacetex;
+        final List<String> texturePacks = new ArrayList<>();  // textures/<name>[.pvmx] -> PRS/<name>.pak
         final List<String> modelFolders = new ArrayList<>();   // gd_PC/<name>/ built into <name>.prs
         final List<String> refused = new ArrayList<>();        // mod.ini paths that leave the mod
 
@@ -64,9 +69,10 @@ final class ModManager {
             List<String> w = new ArrayList<>();
             if (!dllFile.isEmpty()) w.add(dllNote(dllFile));
             if (!exeData.isEmpty() || !dllData.isEmpty()) w.add("EXEData/DLLData patches are not supported");
-            if (textures) w.add("Texture-pack folders (textures/, replacetex/) are not supported yet");
+            if (replacetex) w.add("Loose replacement images (replacetex/) are not supported");
             for (String r : refused) w.add("Refused a path that leaves the mod folder: " + r);
-            if (files == 0 && replaceFiles.isEmpty() && codes.isEmpty()) w.add("Nothing this port can use");
+            if (files == 0 && replaceFiles.isEmpty() && codes.isEmpty() && texturePacks.isEmpty())
+                w.add("Nothing this port can use");
             return w;
         }
 
@@ -76,6 +82,9 @@ final class ModManager {
             if (!modelFolders.isEmpty())
                 n.add("Model folder" + (modelFolders.size() > 1 ? "s " : " ") + String.join(", ", modelFolders)
                       + ": built into the game's model file" + (modelFolders.size() > 1 ? "s" : "") + " at Play");
+            if (!texturePacks.isEmpty())
+                n.add("Texture pack" + (texturePacks.size() > 1 ? "s " : " ") + String.join(", ", texturePacks)
+                      + ": written as the game's texture archive" + (texturePacks.size() > 1 ? "s" : "") + " at Play");
             return n;
         }
     }
@@ -93,6 +102,14 @@ final class ModManager {
         if (what != null)
             return dll + " adds " + what + " on PC. That part is Windows code and cannot run here; "
                    + "the mod's models and textures still load.";
+        if (l.contains("characterselect") || l.contains("charsel"))
+            return dll + " is the whole mod: its character menu on the stage select is Windows code that patches "
+                   + "the game's program in dozens of places, which cannot run here, so the game goes straight into "
+                   + "the stage. To play stages as other characters, use Characters on the first screen instead.";
+        if (l.contains("chaogarden") || l.contains("chaoworld"))
+            return dll + " builds its garden in code (new stage, objects and texture lists), which cannot run here. "
+                   + "Without it the mod's files land on the Neutral Garden instead (its music, light and layout), "
+                   + "so it is best left off in this port.";
         return "Has a DLL (" + dll + "): Windows code, which cannot run in the recompiled game. "
                + "Its files still load; whatever the DLL itself adds is missing.";
     }
@@ -227,11 +244,54 @@ final class ModManager {
                     m.files += 1 - count(md);
                     if (!m.modelFolders.contains(md.getName())) m.modelFolders.add(md.getName());
                 }
-                if (child(r, "textures").isDirectory() || child(r, "replacetex").isDirectory()) m.textures = true;
+                if (child(r, "replacetex").isDirectory()) m.replacetex = true;
+                for (File pk : texturePacks(r)) {
+                    String nm = packName(pk);
+                    if (!m.texturePacks.contains(nm)) m.texturePacks.add(nm);
+                }
             }
             out.add(m);
         }
         return out;
+    }
+
+    /** A mod root's texture packs: textures/<name>/ folders with an index.txt and .pvmx archives. */
+    static List<File> texturePacks(File root) {
+        List<File> out = new ArrayList<>();
+        File[] kids = child(root, "textures").listFiles();
+        if (kids == null) return out;
+        Arrays.sort(kids);
+        for (File k : kids) if (TexturePack.isFolder(k) || TexturePack.isPvmx(k)) out.add(k);
+        return out;
+    }
+
+    static String packName(File pack) {
+        String n = pack.getName();
+        if (pack.isFile() && n.toLowerCase(Locale.ROOT).endsWith(".pvmx")) n = n.substring(0, n.length() - 5);
+        return n;
+    }
+
+    /** A texture pack's PRS/<name>.pak, built into files/modbuild/<mod>/textures/ when it changed. */
+    private static File builtPack(File filesDir, Mod m, File pack, File gamePak, Progress p) {
+        String name = packName(pack);
+        File dir = new File(new File(new File(filesDir, "modbuild"), m.folder.replaceAll("[^A-Za-z0-9._-]", "_")), "textures");
+        File pak = new File(dir, name + ".pak");
+        File sig = new File(dir, name + ".sig");
+        String want = TexturePack.signature(pack) + (gamePak == null ? "" : "game " + gamePak.length() + " " + gamePak.lastModified());
+        if (pak.isFile() && want.equals(OpenSa2.readText(sig))) return pak;
+        try {
+            List<TexturePack.Entry> entries = pack.isDirectory() ? TexturePack.readFolder(pack) : TexturePack.readPvmx(pack);
+            int n = TexturePack.writePak(name, entries, pack, gamePak, pak);
+            OpenSa2.writeText(sig, want);
+            p.line("Built " + name + ".pak from " + m.name + "'s texture pack (" + entries.size() + " texture(s)"
+                   + (n > entries.size() ? ", " + (n - entries.size()) + " more kept from the game's" : "") + ")");
+            return pak;
+        } catch (IOException | RuntimeException e) {
+            pak.delete();
+            sig.delete();
+            p.line("Could not use " + m.name + "'s texture pack " + name + ": " + e.getMessage());
+            return null;
+        }
     }
 
     /** The model folders right under a mod's gd_PC (ModelFolder). */
@@ -371,6 +431,26 @@ final class ModManager {
                     File built = builtModel(filesDir, m, md, p);
                     if (built == null) continue;
                     String rel = "resource/gd_PC/" + md.getName() + ".prs";
+                    String key = rel.toLowerCase(Locale.ROOT);
+                    mine.remove(key);
+                    mine.put(key, built);
+                    mySpell.put(key, rel);
+                }
+            }
+            // Texture packs: after gd_PC, so a pack wins over the same mod's own archive, as in the loader.
+            for (File r : m.roots) {
+                for (File pk : texturePacks(r)) {
+                    String name = packName(pk);
+                    String rel = "resource/gd_PC/PRS/" + name + ".pak";
+                    File gamePak = OpenSa2.resolveCase(readRoot, rel);
+                    File gamePrs = OpenSa2.resolveCase(readRoot, "resource/gd_PC/" + name + ".prs");
+                    if (!gamePak.isFile() && !gamePrs.isFile()) {
+                        p.line("  " + m.name + ": texture pack " + name + " is for a texture list the game does not "
+                               + "have (one its DLL makes), so it is not used");
+                        continue;
+                    }
+                    File built = builtPack(filesDir, m, pk, gamePak.isFile() ? gamePak : null, p);
+                    if (built == null) continue;
                     String key = rel.toLowerCase(Locale.ROOT);
                     mine.remove(key);
                     mine.put(key, built);

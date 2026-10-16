@@ -122,6 +122,9 @@ public class Sa2Activity extends SDLActivity {
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        // Native patches (code patches, character swaps): the game process inherits this one's
+        // environment, so LD_PRELOAD and the plan are set before SDL's thread starts the session.
+        NativePatch.arm(this);
         // The touch pad joins SDL's joysticks at SDL's first poll, before the player lists them.
         boolean touchOn = OpenSa2.prefs(this).getBoolean("touch_on", true);
         Sa2VirtualPad.setWanted(touchOn);
@@ -189,6 +192,7 @@ public class Sa2Activity extends SDLActivity {
         File log = new File(getFilesDir(), "codes.log");
         log.delete();
         mCodes = new CodeEngine(log);
+        mCodes.setNative(NativePatch.plannedCodes(this));
         mCodes.setCodes(run);
         for (String e : errors) android.util.Log.w("opensa2-codes", e);
         if (!run.isEmpty()) mCodes.start();

@@ -7,10 +7,8 @@ import android.database.Cursor;
 import android.net.Uri;
 import android.os.Bundle;
 import android.provider.OpenableColumns;
-import android.text.InputType;
 import android.widget.Button;
 import android.widget.CheckBox;
-import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -48,7 +46,7 @@ public class ModsActivity extends Activity {
                 + "Changes apply at the next Play.", 13, 0xFFA8B4C8));
         col.addView(Ui.row(this,
                 Ui.button(this, "Add mod from file", v -> pickZip()),
-                Ui.button(this, "Install from GameBanana", v -> gameBananaDialog())));
+                Ui.button(this, "Browse GameBanana", v -> startActivity(new Intent(this, GbBrowseActivity.class)))));
         col.addView(Ui.row(this, Ui.button(this, "Rescan", v -> load())));
         mList = new LinearLayout(this);
         mList.setOrientation(LinearLayout.VERTICAL);
@@ -231,21 +229,6 @@ public class ModsActivity extends Activity {
     }
 
     // ------------------------------------------------------------ GameBanana
-
-    private void gameBananaDialog() {
-        EditText e = new EditText(this);
-        e.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
-        e.setHint("gamebanana.com/mods/12345, a mod id, or a 1-click link");
-        AlertDialog d = Ui.dialog(this).setTitle("Install from GameBanana")
-                .setMessage("Paste a GameBanana mod link or its id. On the mod's page you can also tap "
-                        + "\u201c1-Click Install\u201d and choose OpenSA2. Only .zip and .7z downloads can be "
-                        + "unpacked here (not RAR).")
-                .setView(e)
-                .setPositiveButton("Install", (x, w) -> installFromGameBanana(e.getText().toString()))
-                .setNegativeButton("Cancel", null).create();
-        Ui.style(d);
-        d.show();
-    }
 
     private void installFromGameBanana(String input) {
         if (input == null || input.trim().isEmpty()) return;
