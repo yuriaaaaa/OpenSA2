@@ -86,7 +86,8 @@
  * Kind 13 wraps the stage layout loader: `L <level> <class 0|1|2> <file> <where the game reads it>`
  * lines give a speed stage a walker's layout (class 2) when a walker is to play it.
  * Kind 14 lets a function run only in the levels of `H <level>` lines, elsewhere returning at once
- * through the lifted bare ret, `J <off> <guest va>` (fourth field 1: with EAX 0).
+ * through the lifted bare ret, `J <off> <guest va>` (fourth field bit 0: with EAX 0; bits 4-7 the
+ * set of H lines, `H <level> [set]`, it takes).
  * Kind 15 trades two texture lists for a call while a player is a CharID2 (`S <set> <CharID2> <va>
  * <va>`); kind 16 writes a 16-bit field after a call (`Q <off> <field> <value>`, the fourth field
  * the State offset of the register holding the structure).
@@ -367,7 +368,7 @@ static char g_copybuf[256 * 1024];
 /* Kind 14: functions that run only in some levels (H lines), returning at once elsewhere through
  * the lifted bare `ret` (J line: its offset and guest address). */
 #define MAX_HLEVELS 32
-static uint32_t g_hlevel[MAX_HLEVELS];
+static uint32_t g_hlevel[MAX_HLEVELS], g_hset[MAX_HLEVELS];
 static int g_nhlevel;
 static uint64_t g_ret_off;
 static uint32_t g_ret_va;
@@ -516,7 +517,10 @@ static void parse_plan(const char *p) {
                 g_nq++;
             }
         } else if (t == 'H') {
-            if (parse_hex(&s, &a) && g_nhlevel < MAX_HLEVELS) g_hlevel[g_nhlevel++] = (uint32_t)a;
+            if (parse_hex(&s, &a) && g_nhlevel < MAX_HLEVELS) {
+                g_hset[g_nhlevel] = parse_hex(&s, &b) && b < 16 ? (uint32_t)b : 0;
+                g_hlevel[g_nhlevel++] = (uint32_t)a;
+            }
         } else if (t == 'J') {
             if (parse_hex(&s, &a) && parse_hex(&s, &b)) {
                 g_ret_off = a;
@@ -1188,7 +1192,7 @@ static void *wrap_levelgate(wrap_t *w, void *state, uint32_t pc, void *memory) {
         return w->orig(state, pc, memory);
     uint32_t level = g_rd16(g, g_level_va);
     for (int i = 0; i < g_nhlevel; i++)
-        if (g_hlevel[i] == level) return w->orig(state, pc, memory);
+        if (g_hlevel[i] == level && g_hset[i] == ((w->preg >> 4) & 15)) return w->orig(state, pc, memory);
     if (!w->said) {
         w->said = 1;
         begin();

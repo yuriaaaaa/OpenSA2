@@ -80,7 +80,10 @@ original character's, and a stage may expect an upgrade the stand-in does not ha
 the characters, Super Sonic (LoadSuperSonic, 0x0049A950) and Super Shadow (0x0049ABB0) among them;
 a stand-in from another play style gets the stage's layout for its kind (CharID 4 and 5 hunters,
 6 and 7 walkers) when the SA2 Randomizer's layouts are installed, and hunters outside the hunting
-stages get the level gates below. Super Sonic and Super Shadow are in random's speed group too.
+stages get the level gates below. Super Sonic and Super Shadow are in random's speed group too; outside Final Hazard their
+loaders' LastBossPlayerManager_Load (0x0049ECE0) and Exec_Load (0x006EDEE0) do not run (level
+gate, set 1), as the SA2 Randomizer patches them (it also changes a few instructions inside
+Super_DispDelay3 and CheckBreakObject, which this port cannot).
 
 **Amy's and Metal Sonic's Spin Dash** (Characters, on by default) follows MainMemory's
 SA2-Amy-Metal-SpinDash: Sonic's spin dash check (0x00723DD5, where that mod nops a CharID2 test)

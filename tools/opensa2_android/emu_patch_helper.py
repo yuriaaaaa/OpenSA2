@@ -661,7 +661,7 @@ def levelgate_checks(game, patch, check):
     rt, _ = sym["sub_6fe430"]
     f16 = game.b[game.vaddr_to_off(fn):game.vaddr_to_off(fn) + 16].hex()
     plan = "\n".join(["opensa2-patch 1", f"G {fb:x} 20000000", "C 1934b70 1de9600 1 5b", f"J {rt:x} 6fe430",
-                      "H 5", "H 7", f"W {fn:x} {fsize:x} e 1 {f16} gate"]) + "\n"
+                      "H 5", "H 7", "H 42 1", f"W {fn:x} {fsize:x} e 1 {f16} gate"]) + "\n"
     uc, sc = boot(game, patch, plan.encode())
     check("1 of 1 patch(es) applied" in sc.err.decode(), "level gate: the wrapper applied")
     gb = guest_base_var(uc, game)
@@ -694,6 +694,8 @@ def levelgate_checks(game, patch, check):
     check(not ran and regs == (0x1F8004, 0x401234, 0), f"level gate: in City Escape it returns at once with EAX 0 ({ran}, {[hex(x) for x in regs]})")
     ran, regs = run(5)
     check(ran, "level gate: in Pumpkin Hill the body runs")
+    ran, regs = run(0x42)
+    check(not ran, "level gate: a level of another set (Final Hazard, set 1) does not open it")
     uc.hook_del(h)
 
 

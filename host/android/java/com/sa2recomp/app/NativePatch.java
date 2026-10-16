@@ -132,6 +132,7 @@ final class NativePatch {
      * hunting stage's bounds (the black screen Knuckles, Tikal and Chaos gave in City Escape).
      * Character Select Plus runs these only in the hunting stages; kind 14 does the same. */
     private static final int LOAD_EMERALD_MANAGER = 0x73AA70, KNUCKLES_LEVEL_BOUNDS = 0x737B50;
+    private static final int FINAL_HAZARD = 0x42, LAST_BOSS_PLAYER_MANAGER = 0x49ECE0, EXEC_LOAD = 0x6EDEE0;
     private static final int[] HUNTING_LEVELS = {5, 7, 8, 16, 18, 25, 26, 32, 41, 44, 46, 49, 50, 59};
     static final String[] GROUPS = {"speed", "hunt", "mech"};
     /** The Chao Walkers in story stages: the walker's main (0x741530) reads CharObj2Base.CharID2 and
@@ -613,7 +614,7 @@ final class NativePatch {
                           : "Characters: a random character of the same play style each stage");
         }
         boolean any = random && "1".equals(swaps.get(RANDOM_ANY_KEY));
-        boolean walkers = random, cross = false, huntersOut = any, moves = random;
+        boolean walkers = random, cross = false, huntersOut = any, moves = random, supers = random;
         for (Map.Entry<String, String> e : swaps.entrySet()) {
             if (e.getKey().startsWith("*") || e.getKey().equals(e.getValue())) continue;
             Chara from = chara(e.getKey()), to = chara(e.getValue());
@@ -622,6 +623,7 @@ final class NativePatch {
             if (!to.group.equals(from.group)) cross = true;
             if (to.group.equals("hunt") && !from.group.equals("hunt")) huntersOut = true;
             if (to.key.equals("amy") || to.key.equals("metalsonic")) moves = true;
+            if (to.key.startsWith("super")) supers = true;
         }
         moves = moves && "1".equals(swaps.get(MOVES_KEY));
         for (Map.Entry<String, String> e : swaps.entrySet()) {
@@ -691,8 +693,22 @@ final class NativePatch {
             }
             int retVa = retFunction(lib);
             long[] retf = retVa > 0 ? lib.fns.get(retVa) : null;
+            if ((huntersOut || supers) && retf != null) b.append(String.format(Locale.ROOT, "J %x %x\n", retf[0], retVa));
+            if (supers && retf != null) {
+                // Super Sonic and Super Shadow outside Final Hazard, as the SA2 Randomizer has them
+                // (Rando.dll 0x1003D950): their loaders' LastBossPlayerManager_Load (0x49ECE0, called
+                // by them only) and Exec_Load (0x6EDEE0) run in Final Hazard only (set 1).
+                b.append(String.format(Locale.ROOT, "H %x 1\n", FINAL_HAZARD));
+                int[][] gates = {{LAST_BOSS_PLAYER_MANAGER, 0x10}, {EXEC_LOAD, 0x10}};
+                for (int[] gt : gates) {
+                    long[] f = lib.fns.get(gt[0]);
+                    if (f == null || redirects.containsKey(gt[0])) continue;
+                    b.append(String.format(Locale.ROOT, "W %x %x %x %x %s %s\n", f[0], f[1], 14, gt[1],
+                                           hex(lib.bytes(f[0], 16)), String.format(Locale.ROOT, "%x in Final Hazard only", gt[0])));
+                    plan.patches++;
+                }
+            }
             if (huntersOut && retf != null) {
-                b.append(String.format(Locale.ROOT, "J %x %x\n", retf[0], retVa));
                 for (int lv : HUNTING_LEVELS) b.append(String.format(Locale.ROOT, "H %x\n", lv));
                 int[][] gates = {{LOAD_EMERALD_MANAGER, 0}, {KNUCKLES_LEVEL_BOUNDS, 1}};
                 for (int[] gt : gates) {
@@ -706,7 +722,7 @@ final class NativePatch {
                 }
             }
             long[] fb = lib.named.get("sa2_guest_fast_base");
-            if (fb != null && (needWrap || menu || walkers || moves || cross)) b.append(String.format(Locale.ROOT, "G %x %x\n", fb[0], GUEST_SIZE));
+            if (fb != null && (needWrap || menu || walkers || moves || cross || supers)) b.append(String.format(Locale.ROOT, "G %x %x\n", fb[0], GUEST_SIZE));
             if (menu) {
                 // Menus on screens wider than 16:9 (2340x1080 on a Galaxy S25). The menu backgrounds
                 // (story select, Settings) are 16:9 pictures in 1024x512 textures, drawn from the
@@ -742,7 +758,7 @@ final class NativePatch {
                 }
             }
             // The C line (current level, MainCharObj2) for what reads them, once.
-            if (fb != null && !needWrap && (walkers || moves || cross || huntersOut))
+            if (fb != null && !needWrap && (walkers || moves || cross || huntersOut || supers))
                 b.append(String.format(Locale.ROOT, "C %x %x %x %x\n", CURRENT_LEVEL, MAIN_CHAR_OBJ2, CHARID_OFFSET,
                                        LEVEL_INVALID));
             if (moves && fb != null) {

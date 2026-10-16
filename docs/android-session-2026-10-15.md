@@ -533,3 +533,16 @@ Sonikko's light blue; which texture or model that is was not found yet (asked fo
   model for such indices (the game's big-endian MDL appended whole, the reached objects' and chunk
   models' pointers moved). For the user, a Nazo-only repack without the Seelkadoom files, the event
   AFS and the edited plcommtn.prs, with the stage map's Shadow portrait put back (not committed).
+
+# Sixteenth session (2026-10-16): 0.1.16
+
+- On the phone (0.1.15): Super Sonic and Super Shadow crash in City Escape (guest read of 2 bytes
+  at 0x178 under a call from 0x0042416D, both forms). The SA2 Randomizer, which plays Super Sonic
+  as its character 9, first runs Rando.dll 0x1003D950 outside Final Hazard (level 0x42): byte
+  patches nopping the LastBossPlayerManager_Load call in LoadSuperSonic (0x49AB61) and
+  LoadSuperShadow (0x49ADC5), two in Super_DispDelay3 (0x49CD64, 0x49CD6D), data writes at 0x6DF2DA
+  and 0x6DF067, `ret` at Exec_Load (0x6EDEE0) and four bytes in CheckBreakObject (0x46ECE7-0x46ED01).
+- The whole-function ones are reproduced: kind 14's H lines take a set (`H <level> [set]`, the
+  wrapper's fourth field bits 4-7); set 1 is Final Hazard; 0x49ECE0 (called only by the two super
+  loaders) and 0x6EDEE0 return at once elsewhere when a super form can be played. The rest are
+  mid-function and not done; whether these two were the crash is to be seen.
