@@ -78,7 +78,9 @@
  * line for a character gives the position wrappers a second partner to look a level up under.
  * Kind 11 wraps a function of Sonic's action code so that, while it runs, a player whose
  * CharObj2Base.CharID2 is `from` reads `to`, from lines `M <CharID2 offset> <from> <to>` (with
- * the C line's MainCharObj2): Amy and Metal Sonic get the Spin Dash Sonic and Shadow have.
+ * the C line's MainCharObj2), an optional fifth field the set of lines a wrapper takes (its fourth
+ * field's low four bits; bit 4: also clear that player's Upgrades, CharObj2Base+0x24). Set 1: the
+ * Chao Walkers read as Tails's and Eggman's walkers in the walker's main.
  * Kind 12 wraps a restart handler (fourth field 0: pause Restart, 1: after a death) and sends it
  * down the game's restart-with-reload handler, `Y <off> <guest va>`, so random picks again.
  */
@@ -334,7 +336,7 @@ static uint32_t g_last_level[4];
 /* Kind 11: CharObj2Base.CharID2 values read as another for the length of a call (M lines). */
 #define MAX_MOVES 8
 static uint32_t g_cid2_off;
-static uint8_t g_mv_from[MAX_MOVES], g_mv_to[MAX_MOVES];
+static uint8_t g_mv_from[MAX_MOVES], g_mv_to[MAX_MOVES], g_mv_set[MAX_MOVES];
 static int g_nmv;
 
 /* The layout wrapper's view: the screen size the game keeps (HorizontalResolution and
@@ -426,6 +428,7 @@ static void parse_plan(const char *p) {
                 g_cid2_off = (uint32_t)a;
                 g_mv_from[g_nmv] = (uint8_t)b;
                 g_mv_to[g_nmv] = (uint8_t)c;
+                g_mv_set[g_nmv] = parse_hex(&s, &d) && d < 16 ? (uint8_t)d : 0;
                 g_nmv++;
             }
         } else if (t == 'Y') {
@@ -923,7 +926,9 @@ static void *wrap_moves(wrap_t *w, void *state, uint32_t pc, void *memory) {
         if (!co2 || !g_ok(co2 + g_cid2_off, 1)) continue;
         uint8_t id = g[co2 + g_cid2_off];
         for (int k = 0; k < g_nmv; k++) {
-            if (g_mv_from[k] != id) continue;
+            if (g_mv_from[k] != id || g_mv_set[k] != (w->preg & 15)) continue;
+            /* Fourth field bit 4: the player's upgrades are cleared too (and stay cleared). */
+            if ((w->preg & 0x10) && g_ok(co2 + 0x24, 4)) g_wr32(g, co2 + 0x24, 0);
             at[p] = co2 + g_cid2_off;
             was[p] = id;
             now[p] = g_mv_to[k];

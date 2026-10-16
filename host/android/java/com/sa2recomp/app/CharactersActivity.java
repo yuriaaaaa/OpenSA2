@@ -45,9 +45,6 @@ public class CharactersActivity extends Activity {
                 on -> p.edit().putBoolean(NativePatch.RANDOM_ANY_PREF, on).apply()));
         col.addView(Ui.text(this, "Random picks again each time a stage loads, and when you restart it or die before reaching a "
                 + "checkpoint; once you have touched a checkpoint, the same character carries on.", 12, 0xFFA8B4C8));
-        col.addView(Ui.check(this, "Amy and Metal Sonic can Spin Dash, and roll out of a somersault into one, as Sonic "
-                + "and Shadow do (experimental: they may use Sonic's or Shadow's sounds for it)",
-                p.getBoolean(NativePatch.MOVES_PREF, true), on -> p.edit().putBoolean(NativePatch.MOVES_PREF, on).apply()));
         String[] heads = {"Speed stages", null, "Treasure hunting", null, "Walker shooting", null};
         for (int i = 0; i < NativePatch.SLOTS.length; i++) {
             if (heads[i] != null) col.addView(Ui.heading(this, heads[i]));

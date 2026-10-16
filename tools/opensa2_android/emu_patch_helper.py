@@ -468,17 +468,19 @@ def fill_checks(game, patch, check):
 
 
 def moves_checks(game, patch, check):
-    """Kind 11 around the ret function sub_7f4700 standing in for Sonic's spin dash check: with
-    MainCharObj2[0] Amy (CharID2 8) and [1] Metal Sonic (12), the body runs with them read as
-    Sonic (0) and Shadow (1), and both are put back after; Sonic himself is left alone."""
+    """Kind 11 (set 1, upgrades cleared) around the ret function sub_7f4700 standing in for the
+    walker's main: with MainCharObj2[0] the Chao Walker (CharID2 13) and [1] the Dark Chao Walker
+    (14), the body runs with them read as Tails's (6) and Eggman's (7) walkers, both are put back
+    after, and their upgrades are cleared; a set-0 line is not used, and the story walkers are left
+    alone."""
     sym = game.syms
     fn, fsize = sym["sub_7f4700"]
     first16 = game.b[game.vaddr_to_off(fn):game.vaddr_to_off(fn) + 16].hex()
     fb, _ = sym["sa2_guest_fast_base"]
-    plan = "\n".join(["opensa2-patch 1", f"G {fb:x} 20000000", "C 1934b70 1de9600 1 5b", "M 3 8 0", "M 3 c 1",
-                      f"W {fn:x} {fsize:x} b 0 {first16} spin dash"]) + "\n"
+    plan = "\n".join(["opensa2-patch 1", f"G {fb:x} 20000000", "C 1934b70 1de9600 1 5b", "M 3 8 0",
+                      "M 3 d 6 1", "M 3 e 7 1", f"W {fn:x} {fsize:x} b 11 {first16} walkers"]) + "\n"
     uc, sc = boot(game, patch, plan.encode())
-    check("1 of 1 patch(es) applied" in sc.err.decode(), "moves: the wrapper applied")
+    check("1 of 1 patch(es) applied" in sc.err.decode(), "walkers: the wrapper applied")
     gb = guest_base_var(uc, game)
     uc.mem_write(gb, struct.pack("<Q", GUEST))
     for a in (0x1DE9000, 0x1000000, 0x1F0000):
@@ -495,24 +497,26 @@ def moves_checks(game, patch, check):
     def run(c0, c1):
         seen.clear()
         uc.mem_write(GUEST + 0x1DE9600, struct.pack("<II", 0x1000000, 0x1000100))
-        uc.mem_write(GUEST + 0x1000000, bytes([0, 0, 0, c0]))
-        uc.mem_write(GUEST + 0x1000100, bytes([1, 1, 0, c1]))
+        uc.mem_write(GUEST + 0x1000000, bytes([0, 6, 0, c0]) + bytes(0x20) + struct.pack("<I", 0x1FFF7FFF))
+        uc.mem_write(GUEST + 0x1000100, bytes([1, 7, 0, c1]) + bytes(0x20) + struct.pack("<I", 0x1FFF7FFF))
         uc.mem_write(GUEST + 0x1F8000, struct.pack("<I", 0x668227))
         st = bytearray(0x1000)
         struct.pack_into("<I", st, 0x908, 0x1F8000)
         uc.mem_write(STATE, bytes(st))
         run_function(uc, GAME_BASE + fn, STATE, 0x7F4700, 0, limit=100000)
         after = (bytes(uc.mem_read(GUEST + 0x1000003, 1))[0], bytes(uc.mem_read(GUEST + 0x1000103, 1))[0])
+        up = (u32(bytes(uc.mem_read(GUEST + 0x1000024, 4)), 0), u32(bytes(uc.mem_read(GUEST + 0x1000124, 4)), 0))
         s2 = bytes(uc.mem_read(STATE, 0x1000))
-        return (seen[0] if seen else None), after, (u32(s2, 0x908), u32(s2, 0x9A8))
+        return (seen[0] if seen else None), after, up, (u32(s2, 0x908), u32(s2, 0x9A8))
 
-    inside, after, regs = run(8, 12)
-    check(inside == (0, 1), f"moves: Amy and Metal Sonic read as Sonic and Shadow inside (got {inside})")
-    check(after == (8, 12), f"moves: put back after (got {after})")
-    check(regs == (0x1F8004, 0x668227), "moves: the wrapped function returned normally")
-    check("moves: " in sc.err.decode(), "moves: it says so once")
-    inside, after, regs = run(0, 1)
-    check(inside == (0, 1) and after == (0, 1), "moves: Sonic and Shadow are left alone")
+    inside, after, up, regs = run(13, 14)
+    check(inside == (6, 7), f"walkers: the Chao Walkers read as the story walkers inside (got {inside})")
+    check(after == (13, 14), f"walkers: put back after (got {after})")
+    check(up == (0, 0), f"walkers: their upgrades are cleared (got {up})")
+    check(regs == (0x1F8004, 0x668227), "walkers: the wrapped function returned normally")
+    inside, after, up, regs = run(6, 8)
+    check(inside == (6, 8) and after == (6, 8) and up == (0x1FFF7FFF, 0x1FFF7FFF),
+          "walkers: Tails's walker and a set-0 character are left alone")
     uc.hook_del(hk)
 
 

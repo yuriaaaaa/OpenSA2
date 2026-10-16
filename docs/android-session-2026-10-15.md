@@ -444,3 +444,19 @@ Sonikko's light blue; which texture or model that is was not found yet (asked fo
   (`Y <off> <va>`), with a flag that makes the next random pick a new one. Emulator-checked with
   stand-ins; not yet tried in the game: which case is the pause Restart and which the death is a
   guess, so both take the checkpoint rule (a Restart after a checkpoint keeps the character).
+
+# Tenth session (2026-10-16): 0.1.10
+
+- On the phone (0.1.9): the restart re-pick works (`restart: 0x43baaf goes the way of 0x43bb60`).
+  Crashes, each reproduced: the Dark Chao Walker (0x7412F0) as it loads (guest read at
+  0x6B6E617A, same stack twice); the Chao Walker when it shoots (read at 0x4, from an object's
+  main via RunObjectIndex); Amy when she spin dashes with the 0.1.7 patch.
+- The Amy/Metal Spin Dash wrappers are gone from the plan and the Characters screen (Sonic's spin
+  dash and ball code reads per-character data Amy's set lacks; not worth chasing blind).
+- Kind 11 gained sets (M's optional fifth field; the wrapper's fourth field picks one, bit 4 also
+  zeroes the player's Upgrades at CharObj2Base+0x24). Set 1 wraps the walker's main 0x741530 (where
+  Character Select Plus forces the branches at 0x741690 and 0x7416DC, and the scan finds CharID2
+  compared with 7): Chao Walker 13 reads as 6, Dark Chao Walker 14 as 7, upgrades cleared (the
+  code list's "Fix Chao Walker Cannon Upgrade Crash" is the upgraded-shot draw, 0x75D914, which a
+  cleared upgrade set never reaches). Emitted whenever random is on or a swap picks a Chao Walker.
+  Emulator-checked with stand-ins only; whether it is the main that crashed is not proven.

@@ -125,12 +125,12 @@ final class NativePatch {
      * the characters again). With random on, a restart before any checkpoint goes that way. */
     private static final int RESTART_A = 0x43BA75, RESTART_B = 0x43BAAF, RESTART_RELOAD = 0x43BB60;
     static final String[] GROUPS = {"speed", "hunt", "mech"};
-    /** Characters: Amy and Metal Sonic get the Spin Dash (in swaps(), MOVES_KEY). Sonic's action code
-     * starts one only for CharID2 Sonic or Shadow; two of its functions are wrapped (kind 11) so the
-     * stand-in reads as Sonic (Amy) or Shadow (Metal Sonic) while they run. */
-    static final String MOVES_PREF = "stand_in_spindash", MOVES_KEY = "*moves*";
-    private static final int CHARID2_OFFSET = 3, CHARID2_AMY = 8, CHARID2_METAL = 12;
-    private static final int SONIC_SPINDASH_CHECK = 0x723DD5, SONIC_SOMERSAULT = 0x723880;
+    /** The Chao Walkers in story stages: the walker's main (0x741530) reads CharObj2Base.CharID2 and
+     * takes paths only Tails's and Eggman's walkers have data for (Character Select Plus forces two
+     * branches in it, 0x741690 and 0x7416DC); the Dark Chao Walker crashed as it loaded, the Chao
+     * Walker when it shot with the story's upgrades. Kind 11, set 1: while it runs, a Chao Walker
+     * reads as Tails's walker and the Dark Chao Walker as Eggman's, and their upgrades are cleared. */
+    private static final int CHARID2_OFFSET = 3, CHARID2_CHAO = 13, CHARID2_DARKCHAO = 14, WALKER_MAIN = 0x741530;
 
     static String swapPref(String slot) {
         return "swap_" + slot;
@@ -147,7 +147,6 @@ final class NativePatch {
         }
         if (p.getBoolean(RANDOM_PREF, false)) out.put(RANDOM_KEY, "1");
         if (p.getBoolean(RANDOM_PREF, false) && p.getBoolean(RANDOM_ANY_PREF, false)) out.put(RANDOM_ANY_KEY, "1");
-        if (p.getBoolean(MOVES_PREF, true)) out.put(MOVES_KEY, "1");
         return out;
     }
 
@@ -467,7 +466,7 @@ final class NativePatch {
         Map<String, String> swaps = swaps(c);
         boolean anySwap = false;
         for (Map.Entry<String, String> e : swaps.entrySet())
-            anySwap |= !e.getKey().equals(MOVES_KEY) && !e.getKey().equals(e.getValue());
+            anySwap |= !e.getKey().equals(e.getValue());
         List<CodeList.Code> codes = ModManager.codesToRun(c, new ArrayList<>());
         boolean menu = OpenSa2.prefs(c).getBoolean(MENU_PREF, true);
         if (!anySwap && codes.isEmpty() && !menu) return new Plan();
@@ -576,12 +575,10 @@ final class NativePatch {
                           ? "Characters: a random character each stage (the walkers too in speed stages, the same play style elsewhere)"
                           : "Characters: a random character of the same play style each stage");
         }
-        boolean moves = false;
+        boolean walkers = random;
         for (Map.Entry<String, String> e : swaps.entrySet())
-            if (!e.getKey().startsWith("*") && (e.getValue().equals("amy") || e.getValue().equals("metalsonic"))
-                && !e.getKey().equals(e.getValue()))
-                moves = true;
-        moves = "1".equals(swaps.get(MOVES_KEY)) && (moves || random);
+            if (!e.getKey().startsWith("*") && e.getValue().contains("chaowalker") && !e.getKey().equals(e.getValue()))
+                walkers = true;
         for (Map.Entry<String, String> e : swaps.entrySet()) {
             if (random) break;
             if (e.getKey().startsWith("*")) continue;
@@ -637,7 +634,7 @@ final class NativePatch {
                 }
             }
             long[] fb = lib.named.get("sa2_guest_fast_base");
-            if (fb != null && (needWrap || menu || moves)) b.append(String.format(Locale.ROOT, "G %x %x\n", fb[0], GUEST_SIZE));
+            if (fb != null && (needWrap || menu || walkers)) b.append(String.format(Locale.ROOT, "G %x %x\n", fb[0], GUEST_SIZE));
             if (menu) {
                 // Menus on screens wider than 16:9 (2340x1080 on a Galaxy S25). The menu backgrounds
                 // (story select, Settings) are 16:9 pictures in 1024x512 textures, drawn from the
@@ -672,25 +669,17 @@ final class NativePatch {
                     }
                 }
             }
-            if (moves && fb != null && !needWrap)
-                b.append(String.format(Locale.ROOT, "C %x %x %x %x\n", CURRENT_LEVEL, MAIN_CHAR_OBJ2, CHARID_OFFSET,
-                                       LEVEL_INVALID));
-            if (moves && fb != null) {
-                b.append(String.format(Locale.ROOT, "M %x %x %x\n", CHARID2_OFFSET, CHARID2_AMY, 0));
-                b.append(String.format(Locale.ROOT, "M %x %x %x\n", CHARID2_OFFSET, CHARID2_METAL, 1));
-                int[] fns = {SONIC_SPINDASH_CHECK, SONIC_SOMERSAULT};
-                String[] names = {"spin dash for Amy and Metal Sonic", "spin dash from a somersault for Amy and Metal Sonic"};
-                int added = 0;
-                for (int k = 0; k < fns.length; k++) {
-                    long[] f = lib.fns.get(fns[k]);
-                    if (f == null || redirects.containsKey(fns[k])) continue;
-                    b.append(String.format(Locale.ROOT, "W %x %x %x %x %s %s\n", f[0], f[1], 11, 0,
-                                           hex(lib.bytes(f[0], 16)), names[k]));
-                    plan.patches++;
-                    added++;
-                }
-                plan.said.add(added == fns.length ? "Characters: Amy and Metal Sonic can Spin Dash (experimental)"
-                                                  : "Characters: the Spin Dash for Amy and Metal Sonic is not in this build of the game");
+            long[] wm = lib.fns.get(WALKER_MAIN);
+            if (walkers && fb != null && wm != null && !redirects.containsKey(WALKER_MAIN)) {
+                if (!needWrap)
+                    b.append(String.format(Locale.ROOT, "C %x %x %x %x\n", CURRENT_LEVEL, MAIN_CHAR_OBJ2, CHARID_OFFSET,
+                                           LEVEL_INVALID));
+                b.append(String.format(Locale.ROOT, "M %x %x %x 1\n", CHARID2_OFFSET, CHARID2_CHAO, 6));
+                b.append(String.format(Locale.ROOT, "M %x %x %x 1\n", CHARID2_OFFSET, CHARID2_DARKCHAO, 7));
+                b.append(String.format(Locale.ROOT, "W %x %x %x %x %s %s\n", wm[0], wm[1], 11, 0x11,
+                                       hex(lib.bytes(wm[0], 16)), "Chao Walkers as story walkers"));
+                plan.patches++;
+                plan.said.add("Characters: the Chao Walkers run as the story walkers in their main (experimental)");
             }
             if (needWrap && fb == null) {
                 plan.said.add("Character swap: this build does not expose the game's memory, so swapped characters "

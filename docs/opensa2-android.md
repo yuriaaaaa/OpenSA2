@@ -82,11 +82,12 @@ characters again) unless a checkpoint was touched in the stage (CheckpointRecord
 so before a checkpoint a restart or a death picks again. **Walkers in speed stages** puts Tails,
 Eggman and the Chao Walkers in the speed group too; a stand-in with no start or end position for
 the stage takes that of a character who has one. (The hunters were tried in speed stages in
-0.1.8: Tikal and Chaos drew a black screen, so they stay in their own stages.) **Amy and Metal Sonic can Spin
-Dash** (on by default): they run Sonic's own action code, which starts a Spin Dash only for Sonic
-and Shadow (a check on `CharObj2Base.CharID2` in the middle of two functions); the helper wraps
-those two (the spin dash check, 0x00723DD5, and Sonic_Somersault, 0x00723880) so that while they
-run Amy reads as Sonic and Metal Sonic as Shadow, and puts them back after.
+0.1.8: Tikal and Chaos drew a black screen, so they stay in their own stages.) **The Chao Walkers** in story stages: the walker's main (0x00741530) takes paths by
+`CharObj2Base.CharID2` that only Tails's and Eggman's walkers have data for (the Dark Chao Walker
+crashed as it loaded, the Chao Walker when it shot with the story's upgrades), so whenever they can
+turn up the helper wraps it: while it runs they read as Tails's and Eggman's walkers, and their
+upgrades are cleared. (An Amy and Metal Sonic Spin Dash, the same trick on Sonic's action code in
+0.1.7, crashed the game when Amy used it and was taken out.)
 
 ## Saves and logs
 
