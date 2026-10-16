@@ -323,3 +323,52 @@ sprite spanning 0..1920 px, or -200..653 in 640x480 units, at y 0..480), read th
 (H - V*16/9)/2 for those call sites (or stretches the background to the full width), or, if the
 `vars` show the 1280x720 copy, keeping that copy at the real size while the story select runs.
 
+---
+
+# Fifth session (2026-10-16): the menu offset found and fixed (0.1.5)
+
+**What the 0.1.4 log and a video showed:** the offset is on every menu with a full-screen
+picture (story select, Settings) and on the stage map, with the HUD option and the experiment on
+or off, at native and at 720 lines. Everything is placed right: the title, the cards and the
+button hints come out exactly where the centred 640x480 layout puts them (measured on a video
+frame: card edges at 720/1078 and 1282/1640 px for x 120..279 and 370..529 at scale 2.25, offset
+450). The backgrounds are requested across the whole screen: SOCDisplaySprite from 0x668227
+with x -200, width 1040, height 480, u 0..1.015625, v 0..0.9375. The viewport the 2D draws use
+is the full screen (0x420210 maps 640x480 to H x V: its constants at 0x9057B0/0x9057B8 are 480
+and 640, read from the user's own exe). The background's right edge on screen is exactly 1920 px.
+
+**Why:** u 1.015625 = 1040/1024 and v 0.9375 = 480/512: the background is a 1024x512 texture
+drawn one texel a unit. Its picture is 16:9, 853.33x480 (the PC port's menus were made for
+16:9); past x = -200 + 853.33 = 653.33 (1920 px) the empty rest of the texture shows. The stage
+map (DisplayStageMap 0x675DF0) draws its map at x = the screen's left edge with the fixed width
+853 (.rdata 0x907434); emulated with H 2340 it draws at x -200, with H 1920 at -106.67.
+
+**How it was worked out:** the user's sonic2app.exe (kept local: .rdata and .data read straight
+from the file; the .text is SteamStub 2.1-encrypted and was not needed) backed the emulator's
+guest memory, so the game's own lifted code ran with its real constants (`/home/claude/re/emu/`
+scripts, not in the repo: fake device object, skipped texture and shader setters).
+
+**0.1.5:**
+- helper kind 9 (WRAP_FILL) on SOCDisplaySprite: a call that spans the screen (x = 320 - W/2,
+  width = W, W = 480 H/V > 853.33) a texel a unit ((u1 - u0) x 1024 = width) gets u1 = u0 +
+  853.33/1024 and v cropped about its centre by width/853.33: the picture fills the screen, not
+  stretched. Arguments put back after the call. Tested in the emulator (`fill_checks`).
+- kind 3 (16:9 layout) on StageMapExec_Display 0x6777C0 and StageMapExec_Main 0x677350: the
+  map, its icons and text bar are laid out as on a 16:9 screen, centred, black bars both sides.
+- the story select layout wrappers, Menu_StorySelect gate and all traces are gone from the plan
+  (the helper keeps kinds 4-8 for the next screen that needs working out). Settings: "Menus on wide
+  screens: backgrounds fill the screen, stage map centred".
+
+Not seen on the device yet; Render Fix's stage map changes (purple fill, icons moved left) are a
+different look and not copied.
+
+**Also in 0.1.5: merged texture archives.** Sonikko, Shady the Hedgehog and Character Select
+Plus all ship stageMap.pak, each CSP's 25-texture archive with only their own character's portrait
+changed (stg_stagechr_sn, stg_stagechr_sd); the loader keeps only the last one, so Sonikko's and
+Shady's portraits were lost. `Pak.merge` (used by `ModManager.applyMods` for any .pak two or more
+enabled mods replace, when the game's own is there) writes the last mod's archive with each
+texture it leaves as the game's taken from the latest earlier mod that changed it (.inf row's size
+too, place and global index kept). Checked on the three real archives (CSP's standing in for the
+game's). The user also reported a loading-screen "spin ball" in Shadow's colours instead of
+Sonikko's light blue; which texture or model that is was not found yet (asked for a screenshot).
+

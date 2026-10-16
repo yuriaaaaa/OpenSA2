@@ -117,8 +117,8 @@ def main() -> int:
     ap.add_argument("--icon", type=Path)
     ap.add_argument("--keystore", type=Path)
     ap.add_argument("--ndk", type=Path, help="an Android NDK, for the native patch helper's clang")
-    ap.add_argument("--version-name", default="0.1.4-opensa2")
-    ap.add_argument("--version-code", type=int, default=10500)
+    ap.add_argument("--version-name", default="0.1.5-opensa2")
+    ap.add_argument("--version-code", type=int, default=10600)
     a = ap.parse_args()
 
     bt = a.sdk / "build-tools" / BUILD_TOOLS

@@ -39,7 +39,10 @@ The build is cached in the app's storage and redone only when the folder's files
 **Texture archives.** When a mod replaces a `.pak` texture archive, Play writes to the log how it
 differs from the game's — a texture in another position in the list, or under another global
 index, is what makes a modded texture appear in the wrong place (a wrong loading-screen icon, for
-example).
+example). When several mods replace the same archive (Sonikko, Shady the Hedgehog and Character
+Select Plus each ship a stageMap.pak with only their own character changed), Play merges them:
+the last mod's archive, with every texture it leaves as the game's taken from the earlier mod that
+changed it, so each character keeps its mod's icon (cached in the app's storage).
 
 **Texture packs.** The loader's texture packs (`textures/<name>/` with an `index.txt`, or
 `textures/<name>.pvmx`) replace a whole texture list on PC. The game reads
@@ -107,21 +110,19 @@ For character swaps the helper also wraps the three lookups that place a charact
 start and end (`LoadStartPosition` and the two end-position functions): when the stand-in's own
 tables have no entry for the level, the lookup is made under the character it stands in for.
 
-**The story select on wide screens.** On a phone wider than 16:9 the story select's background,
-title and button hints sit in a 16:9 frame from the screen's left edge, with a black strip on the
-right (the character cards, drawn on the centred 4:3 canvas, are right). Not fixed yet: laying out
-the screen's display (0x0067C0F0) as on a 16:9 screen (HorizontalResolution reading the 16:9 width
-while it runs, the runtime's HUD-at-4:3 guards keeping the viewport and projection at the real
-width) changed nothing on a device. With **Settings → Story select on wide screens** on (the
-default), the story select's main (storyMainExec, 0x0067BDF0) is laid out that way too, and
-`game.log` records how the screen draws from the moment the story select menu (Menu_StorySelect,
-0x00670A90) or either of those first runs: the port's sprite call, the full-screen background, the
-viewport, screen rectangle and njSetScreen, njDrawSprite2D, njDrawTexture(Ex), njDrawPolygon(2D)
-and a menu function other menus share, each with its arguments and return address (`trace`,
-`sprite` and `ptr` lines), the first call of each function the game dispatches to (`call`), and
-the screen size in the two places the game keeps it (`vars`). Each function has a budget of lines
-as the screen opens and another once it has been up 4 s. The return addresses say which code
-draws the frame, which is what the fix needs.
+**Menus on wide screens.** On a phone wider than 16:9 (2340x1080) the story select's and
+Settings' backgrounds and the stage map stopped at the 16:9 width with a black strip on the right.
+Everything else on those screens is placed right. The backgrounds are 16:9 pictures (853x480 in
+a 1024x512 texture), drawn by the port's sprite call (SOCDisplaySprite, 0x0041DC80) from the
+screen's left edge to its right one a texel a unit, so past the picture the empty rest of the
+texture shows. The stage map is laid out at a fixed 853.33-unit width from the screen's left edge
+(DisplayStageMap). With **Settings → Menus on wide screens** on (the default), the helper wraps
+the sprite call so such a background draws its picture across the whole screen (u to the picture's
+width, v cropped about its centre by the same factor, so nothing is stretched), and lays the stage
+map's display and main (0x006777C0, 0x00677350) out as on a 16:9 screen, which centres the map
+(HorizontalResolution reading the 16:9 width while they run, the runtime's HUD-at-4:3 guards keeping
+the viewport and projection at the real width). Worked out from a drawing log on the phone (0.1.4:
+the helper can still log calls, kinds 4-8) and by running the game's own code in the emulator.
 
 **SA2 Render Fix** is left out at Play: its model and motion files are loaded by its DLL, and
 without it the game stops at the title screen.
@@ -132,7 +133,7 @@ without it the game stops at the title screen.
 ## Settings
 
 Resolution (screen size, 1080/900/720/540/480 lines or 4:3), HUD at 4:3 positions, the story
-select's wide-screen experiment and drawing log (above), touch
+menus on wide screens (above), touch
 controls, vibration and opacity, saving session logs to `Internal storage/OpenSA2/logs/`,
 performance hints, extra `SA2_` lines for testing, and a reset of the copied mod files that keeps
 saves.

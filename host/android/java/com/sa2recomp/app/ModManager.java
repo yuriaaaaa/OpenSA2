@@ -308,6 +308,51 @@ final class ModManager {
         }
     }
 
+    /**
+     * A texture archive several mods replace, merged (Pak.merge) into files/modbuild/merged/, or
+     * null to keep the last mod's as it is (nothing to take from the others, or it cannot be read).
+     */
+    private static File mergedPak(File filesDir, String key, File game, List<Object[]> sources, Progress p) {
+        String name = key.substring(key.lastIndexOf('/') + 1);
+        File dir = new File(new File(filesDir, "modbuild"), "merged");
+        File pak = new File(dir, name);
+        File sig = new File(dir, name + ".sig");
+        StringBuilder want = new StringBuilder("v1 game " + game.length() + " " + game.lastModified() + "\n");
+        for (Object[] s : sources) {
+            File f = (File) s[1];
+            want.append(s[0]).append(' ').append(f.getAbsolutePath()).append(' ').append(f.length()).append(' ')
+                .append(f.lastModified()).append('\n');
+        }
+        String text = OpenSa2.readText(sig);
+        if (text != null && text.startsWith(want.toString())) {
+            String used = text.substring(want.length());
+            if (used.startsWith("none")) return null;
+            if (pak.isFile()) {
+                p.line("  " + name + ": " + used.trim());
+                return pak;
+            }
+        }
+        try {
+            List<String> taken = Pak.merge(game, sources, pak);
+            Object[] last = sources.get(sources.size() - 1);
+            if (taken.isEmpty()) {
+                pak.delete();
+                OpenSa2.writeText(sig, want + "none");
+                return null;
+            }
+            String used = "the mods' textures merged into " + last[0] + "'s: " + String.join(", ", taken);
+            OpenSa2.writeText(sig, want + used);
+            p.line("  " + name + ": " + used);
+            return pak;
+        } catch (IOException | RuntimeException e) {
+            pak.delete();
+            sig.delete();
+            p.line("  " + name + ": several mods replace it and they could not be merged (" + e.getMessage()
+                   + "); the last one's is used");
+            return null;
+        }
+    }
+
     /** The model folders right under a mod's gd_PC (ModelFolder). */
     static List<File> modelFolders(File gd) {
         List<File> out = new ArrayList<>();
@@ -432,6 +477,7 @@ final class ModManager {
             throws IOException {
         Map<String, File> want = new LinkedHashMap<>();   // folded game path -> source
         Map<String, String> spell = new HashMap<>();      // folded -> as the mod spells it
+        Map<String, List<Object[]>> pakSources = new HashMap<>();   // folded .pak -> {mod name, file}, in order
         for (Mod m : mods) {
             String blocked = m.blocked();
             if (blocked != null) {
@@ -493,10 +539,22 @@ final class ModManager {
             for (Map.Entry<String, File> e : mine.entrySet()) {
                 want.remove(e.getKey());   // a later mod wins, and keeps its own place
                 want.put(e.getKey(), e.getValue());
+                if (e.getKey().endsWith(".pak"))
+                    pakSources.computeIfAbsent(e.getKey(), k -> new ArrayList<>()).add(new Object[] {m.name, e.getValue()});
                 spell.put(e.getKey(), mySpell.containsKey(e.getKey()) ? mySpell.get(e.getKey()) : e.getKey());
             }
             p.line("Mod on: " + m.name + " (" + mine.size() + " file(s))");
             if (!m.dllFile.isEmpty()) p.line("  " + dllNote(m.dllFile));
+        }
+
+        // Texture archives more than one mod replaces: the last one's, with the textures it leaves
+        // as the game's taken from the earlier mods that changed them (Pak.merge).
+        for (Map.Entry<String, List<Object[]>> e : pakSources.entrySet()) {
+            if (e.getValue().size() < 2) continue;
+            File game = OpenSa2.resolveCase(readRoot, spell.containsKey(e.getKey()) ? spell.get(e.getKey()) : e.getKey());
+            if (!game.isFile()) continue;
+            File merged = mergedPak(filesDir, e.getKey(), game, e.getValue(), p);
+            if (merged != null) want.put(e.getKey(), merged);
         }
 
         // Texture archives a mod replaces: how they differ from the game's (Pak.compare).

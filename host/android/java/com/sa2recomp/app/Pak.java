@@ -17,9 +17,9 @@ import java.util.Map;
  * the size. The game fills a texture list in the .inf's order, and textures that share a global
  * index share one loaded texture.
  *
- * Only read here, to tell a mod's archive from the game's when a mod replaces one: a texture in
- * another place or with another global index is the first thing to check when a mod's texture
- * shows up in the wrong place.
+ * Read to tell a mod's archive from the game's when a mod replaces one (a texture in another place
+ * or with another global index is the first thing to check when a mod's texture shows up in the
+ * wrong place), and to merge one that several mods replace (merge).
  */
 final class Pak {
     private Pak() {}
@@ -89,6 +89,80 @@ final class Pak {
         } catch (IOException e) {
             return null;
         }
+    }
+
+    /**
+     * Several mods replace the same archive (Sonikko's and Shady's stageMap.pak, each with one
+     * character's icon changed, and Character Select Plus's with the extra characters): the
+     * loader keeps only the last, which puts back the other mods' characters as the game has them.
+     * This writes the last mod's archive with every texture it leaves as the game's taken from the
+     * latest earlier mod that changed it (its .inf row's size too; the place and global index stay
+     * the last mod's). Returns the textures taken, each "name (mod)"; nothing is written when none
+     * is. `mods` are {name, File} in mod order.
+     */
+    static List<String> merge(File game, List<Object[]> mods, File out) throws IOException {
+        List<String> taken = new ArrayList<>();
+        if (mods.size() < 2) return taken;
+        Map<String, byte[]> g = new HashMap<>();
+        for (Object[] f : TexturePack.pakFiles(game)) g.put(((String) f[0]).toLowerCase(Locale.ROOT), (byte[]) f[1]);
+        List<Map<String, byte[]>> earlier = new ArrayList<>();
+        for (int i = 0; i < mods.size() - 1; i++) {
+            Map<String, byte[]> m = new HashMap<>();
+            for (Object[] f : TexturePack.pakFiles((File) mods.get(i)[1])) m.put(((String) f[0]).toLowerCase(Locale.ROOT), (byte[]) f[1]);
+            earlier.add(m);
+        }
+        List<Object[]> base = TexturePack.pakFiles((File) mods.get(mods.size() - 1)[1]);
+        int infAt = -1;
+        Map<String, Integer> from = new HashMap<>();   // texture short name (no .dds) -> earlier mod
+        for (int k = 0; k < base.size(); k++) {
+            String n = ((String) base.get(k)[0]).toLowerCase(Locale.ROOT);
+            if (n.endsWith(".inf")) {
+                infAt = k;
+                continue;
+            }
+            byte[] gd = g.get(n);
+            if (gd == null || !java.util.Arrays.equals(gd, (byte[]) base.get(k)[1])) continue;
+            for (int i = earlier.size() - 1; i >= 0; i--) {
+                byte[] md = earlier.get(i).get(n);
+                if (md != null && !java.util.Arrays.equals(md, gd)) {
+                    base.get(k)[1] = md;
+                    String tn = n.substring(n.lastIndexOf('\\') + 1);
+                    if (tn.endsWith(".dds") || tn.endsWith(".png")) tn = tn.substring(0, tn.length() - 4);
+                    from.put(tn, i);
+                    taken.add(tn + " (" + mods.get(i)[0] + ")");
+                    break;
+                }
+            }
+        }
+        if (taken.isEmpty()) return taken;
+        if (infAt >= 0) {
+            String infName = ((String) base.get(infAt)[0]).toLowerCase(Locale.ROOT);
+            byte[] inf = ((byte[]) base.get(infAt)[1]).clone();
+            for (int o = 0; o + 60 <= inf.length; o += 60) {
+                int e = o;
+                while (e < o + 28 && inf[e] != 0) e++;
+                String tn = new String(inf, o, e - o, StandardCharsets.ISO_8859_1).toLowerCase(Locale.ROOT);
+                Integer i = from.get(tn);
+                byte[] theirs = i == null ? null : earlier.get(i).get(infName);
+                if (theirs == null) continue;
+                for (int p = 0; p + 60 <= theirs.length; p += 60) {
+                    int e2 = p;
+                    while (e2 < p + 28 && theirs[e2] != 0) e2++;
+                    if (!new String(theirs, p, e2 - p, StandardCharsets.ISO_8859_1).equalsIgnoreCase(tn)) continue;
+                    System.arraycopy(theirs, p + 32, inf, o + 32, 28);   // all but the name and global index
+                    break;
+                }
+            }
+            base.get(infAt)[1] = inf;
+        }
+        List<String> names = new ArrayList<>();
+        List<byte[]> datas = new ArrayList<>();
+        for (Object[] f : base) {
+            names.add((String) f[0]);
+            datas.add((byte[]) f[1]);
+        }
+        TexturePack.writePakFile(names, datas, out);
+        return taken;
     }
 
     private static int le32(byte[] b, int o) {

@@ -400,6 +400,69 @@ def boot(game, patch, plan_text):
     return uc, sc
 
 
+def fill_checks(game, patch, check):
+    """Kind 9 around the ret function sub_7f4700 standing in for the port's sprite call: a menu
+    background spanning a 2340x1080 screen a texel a unit (x -200, width 1040, u 0..1.015625, v
+    0..0.9375) reaches the body with u ending at the 16:9 picture's width (853.33/1024) and v cropped
+    about its centre by the same factor; the caller's arguments are as before after; a sprite that
+    is not such a background, or the same on a 16:9 screen, is left alone."""
+    sym = game.syms
+    fn, fsize = sym["sub_7f4700"]
+    first16 = game.b[game.vaddr_to_off(fn):game.vaddr_to_off(fn) + 16].hex()
+    fb, _ = sym["sa2_guest_fast_base"]
+    plan = "\n".join(["opensa2-patch 1", f"G {fb:x} 20000000", "A 174ba64 174ba68 10 9",
+                      f"W {fn:x} {fsize:x} 9 0 {first16} menu backgrounds"]) + "\n"
+    uc, sc = boot(game, patch, plan.encode())
+    check("1 of 1 patch(es) applied" in sc.err.decode(), "fill: the wrapper applied")
+    gb = guest_base_var(uc, game)
+    uc.mem_write(gb, struct.pack("<Q", GUEST))
+    for a in (0x174B000, 0x1F0000):
+        try:
+            uc.mem_map(GUEST + a, 0x10000 if a >= 0x1F0000 else 0x1000, UC_PROT_READ | UC_PROT_WRITE)
+        except UcError:
+            pass
+    seen = []
+
+    def at_body(u, a, size, d):
+        seen.append(struct.unpack("<10f", bytes(u.mem_read(GUEST + 0x1F8004, 40))))
+    hk = uc.hook_add(UC_HOOK_CODE, at_body, begin=GAME_BASE + fn + 16, end=GAME_BASE + fn + 16)
+
+    def run(h, args):
+        seen.clear()
+        uc.mem_write(GUEST + 0x174BA64, struct.pack("<ff", h, 1080.0))
+        uc.mem_write(GUEST + 0x1F8000, struct.pack("<I", 0x668227) + struct.pack("<10f", *args))
+        st = bytearray(0x1000)
+        struct.pack_into("<I", st, 0x908, 0x1F8000)
+        uc.mem_write(STATE, bytes(st))
+        run_function(uc, GAME_BASE + fn, STATE, 0x7F4700, 0, limit=100000)
+        after = struct.unpack("<10f", bytes(uc.mem_read(GUEST + 0x1F8004, 40)))
+        s2 = bytes(uc.mem_read(STATE, 0x1000))
+        return (seen[0] if seen else None), after, (u32(s2, 0x908), u32(s2, 0x9A8))
+
+    bg = (-200.0, 0.0, 1040.0, 480.0, 1e-4, 0.0, 0.0, 1.015625, 0.9375, 0.0)
+    inside, after, regs = run(2340.0, bg)
+    k = 1040.0 / (480.0 * 16 / 9)
+    want_v0 = (0.9375 - 0.9375 / k) / 2
+    print(f"  fill: inside {[round(x, 4) for x in inside[:9]]}")
+    check(inside is not None and abs(inside[7] - 853.3333 / 1024) < 1e-4 and abs(inside[6] - want_v0) < 1e-4
+          and abs(inside[8] - (want_v0 + 0.9375 / k)) < 1e-4
+          and all(abs(a - b) < 1e-6 for a, b in zip(inside[:6], bg[:6])),
+          "fill: the background's u ends at the picture's width and v is cropped about its centre")
+    check(tuple(round(x, 6) for x in after) == tuple(round(x, 6) for x in bg),
+          "fill: the caller's arguments are put back")
+    check(regs == (0x1F8004, 0x668227), "fill: the wrapped function returned normally")
+    check("menu background drawn across the screen's 2340 px" in sc.err.decode(), "fill: it says so once")
+    hint = (48.0, 440.0, 256.0, 30.0, 5.0, 0.0, 0.0, 1.0, 0.05, 0.0)
+    inside, after, regs = run(2340.0, hint)
+    check(inside is not None and tuple(round(x, 6) for x in inside) == tuple(round(x, 6) for x in hint),
+          "fill: another sprite is left alone")
+    bg169 = (-106.66667, 0.0, 853.33333, 480.0, 1e-4, 0.0, 0.0, 0.8333333, 0.9375, 0.0)
+    inside, after, regs = run(1920.0, bg169)
+    check(inside is not None and tuple(round(x, 4) for x in inside) == tuple(round(x, 4) for x in bg169),
+          "fill: on a 16:9 screen the background is left alone")
+    uc.hook_del(hk)
+
+
 def layout_checks(game, patch, check):
     """Kind 3 (laid out at 16:9) around sub_86eac0, which calls the ret function sub_6fe430,
     itself traced (kind 4): inside, HorizontalResolution reads 1920 for a 2340x1080 screen and the
@@ -852,6 +915,7 @@ def main():
         check(cid == 0, f"{label}: the game's body runs with CharID Sonic for Shadow in City Escape")
 
     layout_checks(game, patch, check)
+    fill_checks(game, patch, check)
     print("ALL PASS" if ok else "SOME FAILED")
     return 0 if ok else 1
 

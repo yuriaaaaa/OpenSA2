@@ -69,7 +69,8 @@
  * 6: the runtime's dispatch; 7: memory at a pointer argument, the fourth field the register's
  * State offset or a stack word's index, plus 0x1000 to follow the pointer found there too) and 8,
  * a function whose first run opens the log (as does a kind-3 wrapper's). Each logged function has
- * a budget of lines as the screen opens and another once it has been up a few seconds.
+ * a budget of lines as the screen opens and another once it has been up a few seconds. Kind 9
+ * wraps the port's sprite call so a menu background's 16:9 picture fills a wider screen (below).
  */
 #include <stddef.h>
 #include <stdint.h>
@@ -281,7 +282,7 @@ typedef struct {
     int early, late, said;  /* lines left as the screen opens and later; said "enter" */
 } wrap_t;
 
-enum { WRAP_LAYOUT = 3, WRAP_TRACE = 4, WRAP_SPRITE = 5, WRAP_DISPATCH = 6, WRAP_PTR = 7, WRAP_GATE = 8 };
+enum { WRAP_LAYOUT = 3, WRAP_TRACE = 4, WRAP_SPRITE = 5, WRAP_DISPATCH = 6, WRAP_PTR = 7, WRAP_GATE = 8, WRAP_FILL = 9 };
 #define TRACE_EARLY 16
 #define TRACE_LATE 48
 #define TRACE_LATER_MS 4000
@@ -353,7 +354,7 @@ static void parse_plan(const char *p) {
                 if (!parse_hex(&s, &r->to) || !parse_hex(&s, &r->to_va)) continue;
             } else {
                 if (!parse_hex(&s, &r->wrap_kind) || !parse_hex(&s, &r->preg)) continue;
-                if (r->wrap_kind > WRAP_GATE) continue;
+                if (r->wrap_kind > WRAP_FILL) continue;
                 if (r->wrap_kind == WRAP_PTR ? (r->preg > 0x1FFF || (r->preg & 0xFFF) > 0x9F0) : r->preg > 0x9F0) continue;
                 if ((r->wrap_kind <= 2 || (r->wrap_kind == WRAP_PTR && (r->preg & 0xFFF) >= 0x800)) && (r->preg & 3)) continue;
             }
@@ -760,6 +761,51 @@ static void *wrap_dispatch(uint32_t va, void *state, uint32_t pc, void *memory) 
     return g_disp_orig(va, state, pc, memory);
 }
 
+/* Kind 9: the port's sprite call (SOCDisplaySprite: EAX the texture, then PosX, PosY, Width, Height,
+ * pri, u0, v0, u1, v1, colour on the stack). The menu backgrounds (story select, Settings) are
+ * 1024x512 textures whose picture is 853x480, a 16:9 screen in the 640x480 layout; the game draws
+ * them from the screen's left edge to its right one with one texel a unit, so on a screen wider
+ * than 16:9 the picture ends at the 16:9 width and the empty rest of the texture shows (black).
+ * Such a call -- spanning the screen, a texel a unit -- draws the picture across the whole width
+ * instead: u to the picture's width, v cropped about its centre by the same factor (no stretch).
+ * The arguments are put back after the call. */
+static int g_fill_said;
+static void *wrap_fill(wrap_t *w, void *state, uint32_t pc, void *memory) {
+    uint8_t *g = guest();
+    if (!g || !g_h_va || !g_ok(g_h_va, 4) || !g_ok(g_v_va, 4)) return w->orig(state, pc, memory);
+    uint32_t esp = esp_of(state);
+    if (!g_ok(esp, 44)) return w->orig(state, pc, memory);
+    float h = f_of(g_rd32(g, g_h_va)), v = f_of(g_rd32(g, g_v_va));
+    if (!(v > 0.0f)) return w->orig(state, pc, memory);
+    float sw = 480.0f * h / v;                       /* the screen's width in 640x480 units */
+    const float pic = 480.0f * 16.0f / 9.0f;         /* the picture's: 853.33 */
+    float x = f_of(g_rd32(g, esp + 4)), wd = f_of(g_rd32(g, esp + 12));
+    float u0 = f_of(g_rd32(g, esp + 24)), v0 = f_of(g_rd32(g, esp + 28));
+    float u1 = f_of(g_rd32(g, esp + 32)), v1 = f_of(g_rd32(g, esp + 36));
+    float spanx = x - (320.0f - sw * 0.5f), spanw = wd - sw, tex = (u1 - u0) * 1024.0f - wd;
+    if (!(sw > pic + 1.0f) || spanx < -1.0f || spanx > 1.0f || spanw < -1.5f || spanw > 1.5f || tex < -2.0f ||
+        tex > 2.0f)
+        return w->orig(state, pc, memory);
+    float k = wd / pic, dv = v1 - v0, nv = dv / k;
+    uint32_t saved[4];
+    for (int i = 0; i < 4; i++) saved[i] = g_rd32(g, esp + 24 + 4 * i);
+    g_wr32(g, esp + 32, b_of(u0 + pic / 1024.0f));
+    g_wr32(g, esp + 28, b_of(v0 + (dv - nv) * 0.5f));
+    g_wr32(g, esp + 36, b_of(v0 + (dv - nv) * 0.5f + nv));
+    if (!g_fill_said) {
+        g_fill_said = 1;
+        begin();
+        put("menu background drawn across the screen's ");
+        put_dec((uint64_t)h);
+        put(" px (its picture ends at the 16:9 width), from the call at ");
+        put_hex(g_rd32(g, esp));
+        end();
+    }
+    void *r = w->orig(state, pc, memory);
+    for (int i = 0; i < 4; i++) g_wr32(g, esp + 24 + 4 * i, saved[i]);
+    return r;
+}
+
 /* ------------------------------------------------------------------ every wrapper's entry */
 
 static void *wrap_common(int slot, void *state, uint32_t pc, void *memory) {
@@ -770,6 +816,7 @@ static void *wrap_common(int slot, void *state, uint32_t pc, void *memory) {
     case WRAP_SPRITE: return wrap_sprite(w, state, pc, memory);
     case WRAP_PTR: return wrap_ptr(w, state, pc, memory);
     case WRAP_GATE: return wrap_gate(w, state, pc, memory);
+    case WRAP_FILL: return wrap_fill(w, state, pc, memory);
     default: break;
     }
     uint8_t *g = guest();
@@ -986,6 +1033,7 @@ static void apply(uintptr_t base, uint64_t psize) {
             int known = g_fastbase && g_guest_size;
             if (r->wrap_kind <= 2) known = known && g_co2_va && g_level_va;
             else if (r->wrap_kind == WRAP_LAYOUT) known = known && g_h_va && g_v_va && g_hud_off && g_sw_off && g_real_off;
+            else if (r->wrap_kind == WRAP_FILL) known = known && g_h_va && g_v_va;
             if (known && r->wrap_kind == WRAP_DISPATCH) {
                 if (g_disp_orig) {
                     skipped(r, "only one dispatch wrapper is taken");
