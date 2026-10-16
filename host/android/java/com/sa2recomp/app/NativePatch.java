@@ -126,6 +126,11 @@ final class NativePatch {
     private static final int RESTART_A = 0x43BA75, RESTART_B = 0x43BAAF, RESTART_RELOAD = 0x43BB60;
     /** LoadStageSETFile, which each stage's init calls to read its object layout (set file). */
     private static final int STAGE_SET_LOAD = 0x488F60;
+    /** A hunter in a speed stage: its loader starts the emerald manager and its moves keep it in the
+     * hunting stage's bounds (the black screen Knuckles, Tikal and Chaos gave in City Escape).
+     * Character Select Plus runs these only in the hunting stages; kind 14 does the same. */
+    private static final int LOAD_EMERALD_MANAGER = 0x73AA70, KNUCKLES_LEVEL_BOUNDS = 0x737B50;
+    private static final int[] HUNTING_LEVELS = {5, 7, 8, 16, 18, 25, 26, 32, 41, 44, 46, 49, 50, 59};
     static final String[] GROUPS = {"speed", "hunt", "mech"};
     /** The Chao Walkers in story stages: the walker's main (0x741530) reads CharObj2Base.CharID2 and
      * takes paths only Tails's and Eggman's walkers have data for (Character Select Plus forces two
@@ -640,6 +645,22 @@ final class NativePatch {
                                            hex(lib.bytes(sl[0], 16)), "stage layouts for walkers"));
                     plan.patches++;
                     plan.said.add("Characters: speed stages get a hunter's or walker's layout when one plays them (SA2 Randomizer's layouts)");
+                }
+                int retVa = retFunction(lib);
+                long[] retf = retVa > 0 ? lib.fns.get(retVa) : null;
+                if (any && retf != null) {
+                    b.append(String.format(Locale.ROOT, "J %x %x\n", retf[0], retVa));
+                    for (int lv : HUNTING_LEVELS) b.append(String.format(Locale.ROOT, "H %x\n", lv));
+                    int[][] gates = {{LOAD_EMERALD_MANAGER, 0}, {KNUCKLES_LEVEL_BOUNDS, 1}};
+                    for (int[] gt : gates) {
+                        long[] f = lib.fns.get(gt[0]);
+                        if (f == null || redirects.containsKey(gt[0])) continue;
+                        b.append(String.format(Locale.ROOT, "W %x %x %x %x %s %s\n", f[0], f[1], 14, gt[1],
+                                               hex(lib.bytes(f[0], 16)),
+                                               gt[1] == 0 ? "emerald manager in hunting stages only"
+                                                          : "hunter level bounds in hunting stages only"));
+                        plan.patches++;
+                    }
                 }
                 long[] rl = lib.fns.get(RESTART_RELOAD);
                 if (rl != null && !redirects.containsKey(RESTART_RELOAD)) {

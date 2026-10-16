@@ -650,6 +650,53 @@ def setload_checks(game, patch, check):
         uc.hook_del(h)
 
 
+def levelgate_checks(game, patch, check):
+    """Kind 14 around LoadEmeraldManager's stand-in (the ret function sub_7f4700 would hide the
+    difference, so the wrapped function is LoadSonic, stopped at its body): in City Escape (13) the
+    call returns at once through the J line's ret function, popping the return address (and with
+    the fourth field 1, EAX 0); in Pumpkin Hill (5, an H line) the body runs."""
+    sym = game.syms
+    fb, _ = sym["sa2_guest_fast_base"]
+    fn, fsize = sym["sub_716e00"]
+    rt, _ = sym["sub_6fe430"]
+    f16 = game.b[game.vaddr_to_off(fn):game.vaddr_to_off(fn) + 16].hex()
+    plan = "\n".join(["opensa2-patch 1", f"G {fb:x} 20000000", "C 1934b70 1de9600 1 5b", f"J {rt:x} 6fe430",
+                      "H 5", "H 7", f"W {fn:x} {fsize:x} e 1 {f16} gate"]) + "\n"
+    uc, sc = boot(game, patch, plan.encode())
+    check("1 of 1 patch(es) applied" in sc.err.decode(), "level gate: the wrapper applied")
+    gb = guest_base_var(uc, game)
+    uc.mem_write(gb, struct.pack("<Q", GUEST))
+    for a in (0x1934000, 0x1F0000):
+        try:
+            uc.mem_map(GUEST + a, 0x10000 if a == 0x1F0000 else 0x1000, UC_PROT_READ | UC_PROT_WRITE)
+        except UcError:
+            pass
+    hit = []
+
+    def at(u, a, size, d):
+        hit.append(a)
+        u.emu_stop()
+    h = uc.hook_add(UC_HOOK_CODE, at, begin=GAME_BASE + fn + 16, end=GAME_BASE + fn + 16)
+
+    def run(level):
+        hit.clear()
+        uc.mem_write(GUEST + 0x1934B70, struct.pack("<h", level))
+        uc.mem_write(GUEST + 0x1F8000, struct.pack("<I", 0x401234))
+        st = bytearray(0x1000)
+        struct.pack_into("<I", st, 0x908, 0x1F8000)
+        struct.pack_into("<I", st, 0x8A8, 0x55)
+        uc.mem_write(STATE, bytes(st))
+        run_function(uc, GAME_BASE + fn, STATE, 0x716E00, 0, limit=100000)
+        s2 = bytes(uc.mem_read(STATE, 0x1000))
+        return bool(hit), (u32(s2, 0x908), u32(s2, 0x9A8), u32(s2, 0x8A8))
+
+    ran, regs = run(13)
+    check(not ran and regs == (0x1F8004, 0x401234, 0), f"level gate: in City Escape it returns at once with EAX 0 ({ran}, {[hex(x) for x in regs]})")
+    ran, regs = run(5)
+    check(ran, "level gate: in Pumpkin Hill the body runs")
+    uc.hook_del(h)
+
+
 def layout_checks(game, patch, check):
     """Kind 3 (laid out at 16:9) around sub_86eac0, which calls the ret function sub_6fe430,
     itself traced (kind 4): inside, HorizontalResolution reads 1920 for a 2340x1080 screen and the
@@ -1107,6 +1154,7 @@ def main():
     moves_checks(game, patch, check)
     restart_checks(game, patch, check)
     setload_checks(game, patch, check)
+    levelgate_checks(game, patch, check)
     print("ALL PASS" if ok else "SOME FAILED")
     return 0 if ok else 1
 

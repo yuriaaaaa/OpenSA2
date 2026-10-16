@@ -490,3 +490,18 @@ Sonikko's light blue; which texture or model that is was not found yet (asked fo
 - Layout classes are now the pick's own group: 0 speed (the usual file), 1 hunter (Options 1.bin),
   2 walker (2.bin). StageLayouts stages 1.bin too; the helper takes L lines of class 0-2, and a
   forced restart picks among the class the layout was set out for.
+
+# Thirteenth session (2026-10-16): 0.1.13
+
+- On the phone (0.1.12): Tails's and Eggman's walkers play City Escape; Knuckles gave the same
+  black screen with the emerald radar as Tikal and Chaos. Character Select Plus does two things
+  for hunters outside the hunting stages: it nops the LoadEmeraldManager call in all four hunter
+  loaders (0x728141, 0x728491, 0x7288B7, 0x728B64) unless the level is a hunting one, and hooks
+  Knuckles_LevelBounds (0x737B50, usercall EAX/ECX, returns EAX) to return 0 outside the hunters'
+  stage-select levels.
+- Helper kind 14 (level gate): `H <level>` lines list the hunting levels (5 7 8 16 18 25 26 32 41
+  44 46 49 50 59), `J <off> <va>` the lifted bare ret (0x6FE430); elsewhere the wrapped function
+  returns at once through it (fourth field 1: EAX 0 first). Wrapped: 0x73AA70 and 0x737B50, when
+  random's speed stages take Knuckles and Rouge. Emulator-checked (pops the return address, EAX 0
+  in City Escape; the body runs in Pumpkin Hill). Whether these were the black screen's cause is
+  not proven yet.

@@ -85,6 +85,8 @@
  * down the game's restart-with-reload handler, `Y <off> <guest va>`, so random picks again.
  * Kind 13 wraps the stage layout loader: `L <level> <class 0|1|2> <file> <where the game reads it>`
  * lines give a speed stage a walker's layout (class 2) when a walker is to play it.
+ * Kind 14 lets a function run only in the levels of `H <level>` lines, elsewhere returning at once
+ * through the lifted bare ret, `J <off> <guest va>` (fourth field 1: with EAX 0).
  */
 #include <stddef.h>
 #include <stdint.h>
@@ -303,7 +305,7 @@ typedef struct {
     int early, late, said;  /* lines left as the screen opens and later; said "enter" */
 } wrap_t;
 
-enum { WRAP_LAYOUT = 3, WRAP_TRACE = 4, WRAP_SPRITE = 5, WRAP_DISPATCH = 6, WRAP_PTR = 7, WRAP_GATE = 8, WRAP_FILL = 9, WRAP_RANDOM = 10, WRAP_MOVES = 11, WRAP_RESTART = 12, WRAP_SETLOAD = 13 };
+enum { WRAP_LAYOUT = 3, WRAP_TRACE = 4, WRAP_SPRITE = 5, WRAP_DISPATCH = 6, WRAP_PTR = 7, WRAP_GATE = 8, WRAP_FILL = 9, WRAP_RANDOM = 10, WRAP_MOVES = 11, WRAP_RESTART = 12, WRAP_SETLOAD = 13, WRAP_LEVELGATE = 14 };
 #define TRACE_EARLY 16
 #define TRACE_LATE 48
 #define TRACE_LATER_MS 4000
@@ -358,6 +360,13 @@ static int g_picked_since_load;
 static int g_load_k = -1;   /* this load's pick, for its second layout file */
 static uint32_t g_load_level = 0xFFFF;
 static char g_copybuf[256 * 1024];
+/* Kind 14: functions that run only in some levels (H lines), returning at once elsewhere through
+ * the lifted bare `ret` (J line: its offset and guest address). */
+#define MAX_HLEVELS 32
+static uint32_t g_hlevel[MAX_HLEVELS];
+static int g_nhlevel;
+static uint64_t g_ret_off;
+static uint32_t g_ret_va;
 /* Kind 11: CharObj2Base.CharID2 values read as another for the length of a call (M lines). */
 #define MAX_MOVES 8
 static uint32_t g_cid2_off;
@@ -416,7 +425,7 @@ static void parse_plan(const char *p) {
                 if (!parse_hex(&s, &r->to) || !parse_hex(&s, &r->to_va)) continue;
             } else {
                 if (!parse_hex(&s, &r->wrap_kind) || !parse_hex(&s, &r->preg)) continue;
-                if (r->wrap_kind > WRAP_SETLOAD) continue;
+                if (r->wrap_kind > WRAP_LEVELGATE) continue;
                 if (r->wrap_kind == WRAP_PTR ? (r->preg > 0x1FFF || (r->preg & 0xFFF) > 0x9F0) : r->preg > 0x9F0) continue;
                 if ((r->wrap_kind <= 2 || (r->wrap_kind == WRAP_PTR && (r->preg & 0xFFF) >= 0x800)) && (r->preg & 3)) continue;
             }
@@ -476,6 +485,13 @@ static void parse_plan(const char *p) {
                     g_ly_class[g_nly] = (uint32_t)b;
                     g_nly++;
                 }
+            }
+        } else if (t == 'H') {
+            if (parse_hex(&s, &a) && g_nhlevel < MAX_HLEVELS) g_hlevel[g_nhlevel++] = (uint32_t)a;
+        } else if (t == 'J') {
+            if (parse_hex(&s, &a) && parse_hex(&s, &b)) {
+                g_ret_off = a;
+                g_ret_va = (uint32_t)b;
             }
         } else if (t == 'K') {
             if (parse_hex(&s, &a)) g_cp_va = (uint32_t)a;
@@ -1103,6 +1119,29 @@ static void *wrap_setload(wrap_t *w, void *state, uint32_t pc, void *memory) {
     return w->orig(state, pc, memory);
 }
 
+/* Kind 14: a hunter's emerald manager and level bounds (LoadEmeraldManager, Knuckles_LevelBounds)
+ * belong to the hunting stages: in any other level (a hunter standing in for Sonic) the call
+ * returns at once (fourth field 1: with EAX 0, "no bounds"), as Character Select Plus does. */
+static void *wrap_levelgate(wrap_t *w, void *state, uint32_t pc, void *memory) {
+    uint8_t *g = guest();
+    if (!g || !g_guest_size || !g_level_va || !g_ok(g_level_va, 2) || !g_ret_off)
+        return w->orig(state, pc, memory);
+    uint32_t level = g_rd16(g, g_level_va);
+    for (int i = 0; i < g_nhlevel; i++)
+        if (g_hlevel[i] == level) return w->orig(state, pc, memory);
+    if (!w->said) {
+        w->said = 1;
+        begin();
+        put("level gate: ");
+        put_hex(pc);
+        put(" skipped in stage ");
+        put_hex(level);
+        end();
+    }
+    if (w->preg & 1) *(uint32_t *)((uint8_t *)state + 0x8A8) = 0;
+    return ((lifted_fn)(g_base + g_ret_off))(state, g_ret_va, memory);
+}
+
 /* ------------------------------------------------------------------ every wrapper's entry */
 
 static void *wrap_common(int slot, void *state, uint32_t pc, void *memory) {
@@ -1118,6 +1157,7 @@ static void *wrap_common(int slot, void *state, uint32_t pc, void *memory) {
     case WRAP_MOVES: return wrap_moves(w, state, pc, memory);
     case WRAP_RESTART: return wrap_restart(w, state, pc, memory);
     case WRAP_SETLOAD: return wrap_setload(w, state, pc, memory);
+    case WRAP_LEVELGATE: return wrap_levelgate(w, state, pc, memory);
     default: break;
     }
     uint8_t *g = guest();
@@ -1349,6 +1389,7 @@ static void apply(uintptr_t base, uint64_t psize) {
             else if (r->wrap_kind == WRAP_MOVES) known = known && g_co2_va && g_nmv;
             else if (r->wrap_kind == WRAP_RESTART) known = known && g_level_va && g_reload_off;
             else if (r->wrap_kind == WRAP_SETLOAD) known = known && g_level_va && g_nly;
+            else if (r->wrap_kind == WRAP_LEVELGATE) known = known && g_level_va && g_ret_off && g_nhlevel;
             if (r->wrap_kind == WRAP_RANDOM) {
                 uint32_t grp = (uint32_t)r->preg & 3, va = 0;
                 for (int z = 0; z < g_nz; z++)
