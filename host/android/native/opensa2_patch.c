@@ -72,7 +72,9 @@
  * a budget of lines as the screen opens and another once it has been up a few seconds. Kind 9
  * wraps the port's sprite call so a menu background's 16:9 picture fills a wider screen (below).
  * Kind 10 wraps a character's Load function (fourth field: its group, 0-3) and plays it as a random
- * member of that group each time, with a line `Z <off> <guest va>` for each member; a second P
+ * member of that group each time, with a line `Z <off> <guest va>` for each member (bits 2-5 of the
+ * fourth field: other groups it is also a member of; `K <CheckpointRecords va>`: a reload in the
+ * same level after a checkpoint was touched keeps the last pick); a second P
  * line for a character gives the position wrappers a second partner to look a level up under.
  * Kind 11 wraps a function of Sonic's action code so that, while it runs, a player whose
  * CharObj2Base.CharID2 is `from` reads `to`, from lines `M <CharID2 offset> <from> <to>` (with
@@ -309,7 +311,7 @@ static uint32_t g_level_va, g_co2_va, g_charid_off, g_invalid = 0xFFFF;
 static uint32_t g_table[3][MAX_CHARS], g_table_size[3][MAX_CHARS];
 static uint8_t g_partner[MAX_CHARS], g_partner2[MAX_CHARS];
 /* Random swaps (kind 10): each group's members, their guest addresses (Z lines) and original bodies. */
-#define MAX_GROUP 8
+#define MAX_GROUP 16
 static uint64_t g_z_off[64];
 static uint32_t g_z_va[64];
 static int g_nz;
@@ -317,6 +319,11 @@ static lifted_fn g_grp_fn[4][MAX_GROUP];
 static uint32_t g_grp_va[4][MAX_GROUP];
 static int g_grp_n[4];
 static uint64_t g_rng;
+/* After a death past a checkpoint the stage reloads its character: keep that stage's pick (K line:
+ * CheckpointRecords, whose first short is the level a checkpoint was touched in). */
+static uint32_t g_cp_va;
+static int g_last_k[4] = {-1, -1, -1, -1};
+static uint32_t g_last_level[4];
 /* Kind 11: CharObj2Base.CharID2 values read as another for the length of a call (M lines). */
 #define MAX_MOVES 8
 static uint32_t g_cid2_off;
@@ -414,6 +421,8 @@ static void parse_plan(const char *p) {
                 g_mv_to[g_nmv] = (uint8_t)c;
                 g_nmv++;
             }
+        } else if (t == 'K') {
+            if (parse_hex(&s, &a)) g_cp_va = (uint32_t)a;
         } else if (t == 'Z') {
             if (parse_hex(&s, &a) && parse_hex(&s, &b) && g_nz < 64) {
                 g_z_off[g_nz] = a;
@@ -861,12 +870,25 @@ static void *wrap_random(wrap_t *w, void *state, uint32_t pc, void *memory) {
     uint32_t grp = w->preg & 3;
     int n = g_grp_n[grp];
     if (n <= 1) return w->orig(state, pc, memory);
-    int k = (int)(rnd() % (uint32_t)n);
+    uint8_t *g = guest();
+    uint32_t level = 0xFFFF, cp = 0xFFFE;
+    if (g && g_guest_size && g_level_va && g_ok(g_level_va, 2)) level = g_rd16(g, g_level_va);
+    if (g && g_guest_size && g_cp_va && g_ok(g_cp_va, 2)) cp = g_rd16(g, g_cp_va);
+    int k, kept = 0;
+    if (g_last_k[grp] >= 0 && g_last_k[grp] < n && level != 0xFFFF && level == g_last_level[grp] && cp == level) {
+        k = g_last_k[grp];
+        kept = 1;
+    } else {
+        k = (int)(rnd() % (uint32_t)n);
+    }
+    g_last_k[grp] = k;
+    g_last_level[grp] = level;
     begin();
     put("random: ");
     put_hex(pc);
-    put(" played as ");
+    put(kept ? " kept as " : " played as ");
     put_hex(g_grp_va[grp][k]);
+    if (kept) put(" (a checkpoint was reached)");
     end();
     return g_grp_fn[grp][k](state, g_grp_va[grp][k], memory);
 }
@@ -938,6 +960,15 @@ static void *wrap_common(int slot, void *state, uint32_t pc, void *memory) {
                 uint32_t level = g_rd16(g, g_level_va);
                 if (partner != 0xFF && id < MAX_CHARS && g_partner2[id] != 0xFF && !has_level(g, w->kind, partner, level))
                     partner = g_partner2[id];
+                if (id < MAX_CHARS && !has_level(g, w->kind, id, level) &&
+                    (partner == 0xFF || !has_level(g, w->kind, partner, level))) {
+                    /* A stand-in from another play style: anyone whose table has the level. */
+                    for (uint32_t o = 0; o < MAX_CHARS; o++)
+                        if (g_table[w->kind][o] && has_level(g, w->kind, o, level)) {
+                            partner = (uint8_t)o;
+                            break;
+                        }
+                }
                 if (partner != 0xFF && !has_level(g, w->kind, id, level) && has_level(g, w->kind, partner, level)) {
                     g[co2 + g_charid_off] = partner;
                     void *r = w->orig(state, pc, memory);
@@ -1153,9 +1184,14 @@ static void apply(uintptr_t base, uint64_t psize) {
                     skipped(r, "the plan does not give its guest address");
                     continue;
                 }
-                g_grp_fn[grp][g_grp_n[grp]] = (lifted_fn)tramp[i];
-                g_grp_va[grp][g_grp_n[grp]] = va;
-                g_grp_n[grp]++;
+                /* Its own group, and each other group in bits 2-5 of the fourth field. */
+                for (uint32_t gi = 0; gi < 4; gi++) {
+                    if (gi != grp && !((r->preg >> (2 + gi)) & 1)) continue;
+                    if (g_grp_n[gi] >= MAX_GROUP) continue;
+                    g_grp_fn[gi][g_grp_n[gi]] = (lifted_fn)tramp[i];
+                    g_grp_va[gi][g_grp_n[gi]] = va;
+                    g_grp_n[gi]++;
+                }
                 known = 1;
             }
             if (known && r->wrap_kind == WRAP_DISPATCH) {

@@ -117,6 +117,9 @@ final class NativePatch {
 
     /** Characters: a random character of the same play style each stage (in swaps(), RANDOM_KEY). */
     static final String RANDOM_PREF = "swap_random", RANDOM_KEY = "*random*";
+    /** With random on: anyone may turn up in a speed stage (the speed group draws from all twelve). */
+    static final String RANDOM_ANY_PREF = "swap_random_any", RANDOM_ANY_KEY = "*any*";
+    private static final int CHECKPOINT_RECORDS = 0x1934B88;
     static final String[] GROUPS = {"speed", "hunt", "mech"};
     /** Characters: Amy and Metal Sonic get the Spin Dash (in swaps(), MOVES_KEY). Sonic's action code
      * starts one only for CharID2 Sonic or Shadow; two of its functions are wrapped (kind 11) so the
@@ -139,6 +142,7 @@ final class NativePatch {
             out.put(s, to != null && to.group.equals(from.group) ? v : s);
         }
         if (p.getBoolean(RANDOM_PREF, false)) out.put(RANDOM_KEY, "1");
+        if (p.getBoolean(RANDOM_PREF, false) && p.getBoolean(RANDOM_ANY_PREF, false)) out.put(RANDOM_ANY_KEY, "1");
         if (p.getBoolean(MOVES_PREF, true)) out.put(MOVES_KEY, "1");
         return out;
     }
@@ -564,7 +568,9 @@ final class NativePatch {
                 partner[pr[1]] = pr[0];
             }
             needWrap = true;
-            plan.said.add("Characters: a random character of the same play style each stage");
+            plan.said.add("1".equals(swaps.get(RANDOM_ANY_KEY))
+                          ? "Characters: a random character each stage (anyone in speed stages, the same play style elsewhere)"
+                          : "Characters: a random character of the same play style each stage");
         }
         boolean moves = false;
         for (Map.Entry<String, String> e : swaps.entrySet())
@@ -599,12 +605,16 @@ final class NativePatch {
                 plan.patches++;
             }
             if (random) {
+                boolean any = "1".equals(swaps.get(RANDOM_ANY_KEY));
+                // A reload in the same stage after a checkpoint keeps the pick; before one, it picks again.
+                b.append(String.format(Locale.ROOT, "K %x\n", CHECKPOINT_RECORDS));
                 for (int g = 0; g < GROUPS.length; g++) {
                     for (Chara c : CHARAS) {
                         if (!c.group.equals(GROUPS[g]) || !lib.has(c.load) || redirects.containsKey(c.load)) continue;
                         long[] f = lib.fns.get(c.load);
                         b.append(String.format(Locale.ROOT, "Z %x %x\n", f[0], c.load));
-                        b.append(String.format(Locale.ROOT, "W %x %x %x %x %s %s\n", f[0], f[1], 10, g,
+                        int member = g | (any && g != 0 ? 1 << 2 : 0);   // bit 2: also in the speed group
+                        b.append(String.format(Locale.ROOT, "W %x %x %x %x %s %s\n", f[0], f[1], 10, member,
                                                hex(lib.bytes(f[0], 16)), "random " + c.name));
                         plan.patches++;
                     }

@@ -39,6 +39,12 @@ public class CharactersActivity extends Activity {
                     p.edit().putBoolean(NativePatch.RANDOM_PREF, on).apply();
                     show();
                 }));
+        col.addView(Ui.check(this, "With random: anyone can turn up in speed stages, Knuckles, Rouge, Tikal, Chaos and the "
+                + "walkers too (very experimental: some may not be able to finish every stage)",
+                p.getBoolean(NativePatch.RANDOM_ANY_PREF, false),
+                on -> p.edit().putBoolean(NativePatch.RANDOM_ANY_PREF, on).apply()));
+        col.addView(Ui.text(this, "Random picks again each time a stage loads, also after you die; once you have "
+                + "touched a checkpoint, dying keeps the same character.", 12, 0xFFA8B4C8));
         col.addView(Ui.check(this, "Amy and Metal Sonic can Spin Dash, and roll out of a somersault into one, as Sonic "
                 + "and Shadow do (experimental: they may use Sonic's or Shadow's sounds for it)",
                 p.getBoolean(NativePatch.MOVES_PREF, true), on -> p.edit().putBoolean(NativePatch.MOVES_PREF, on).apply()));

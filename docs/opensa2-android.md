@@ -74,7 +74,12 @@ without its DLL (below, *Native patches*). Experimental: voices and some sounds 
 original character's, and a stage may expect an upgrade the stand-in does not have.
 
 **Random each stage** loads a random character of the same play style each time a story
-character is loaded (the choices are set aside while it is on). **Amy and Metal Sonic can Spin
+character is loaded (the choices are set aside while it is on). The game reloads the character
+when you die, so a death picks again, unless a checkpoint was touched in that stage
+(CheckpointRecords, 0x01934B88, names it), which keeps the pick. **Anyone in speed stages** lets
+the speed group draw from all twelve (hunters and walkers in Sonic's and Shadow's stages); a
+stand-in with no start or end position for the stage takes that of a character who has one.
+Very experimental: a walker on City Escape's board or a hunter without a goal may get stuck. **Amy and Metal Sonic can Spin
 Dash** (on by default): they run Sonic's own action code, which starts a Spin Dash only for Sonic
 and Shadow (a check on `CharObj2Base.CharID2` in the middle of two functions); the helper wraps
 those two (the spin dash check, 0x00723DD5, and Sonic_Somersault, 0x00723880) so that while they

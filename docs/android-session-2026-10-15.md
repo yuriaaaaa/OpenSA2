@@ -410,3 +410,18 @@ Sonikko's light blue; which texture or model that is was not found yet (asked fo
   somersault (the hammer swing) was already there; the Fire Somersault effects with upgrades are
   a separate known crash (the "Disable Fire Somersault Effects" code works natively). Not yet
   tried on the phone: sounds inside those two functions may be Sonic's or Shadow's.
+
+# Eighth session (2026-10-16): 0.1.8
+
+- The random pick worked on the phone (Shadow and Amy seen in City Escape). The restart after a
+  death runs `sub_43c970` (part of RestartInitStageRuntime), which calls LoadCharacters, so the
+  character is reloaded and random picks again. New: a `K <CheckpointRecords va>` plan line; when
+  a reload is in the same level as the last pick and CheckpointRecords[0].level is that level (a
+  checkpoint was touched), the last pick is kept (`random: ... kept as ...`).
+- "Anyone in speed stages" (Characters, under Random): the hunt and mech members' kind-10 lines
+  carry bit 2 of the fourth field, which also puts them in group 0, so LoadSonic/LoadShadow draw
+  from all twelve. The position wrappers fall back to the first character whose table has the
+  level when neither the stand-in's nor its partners' do (Knuckles in City Escape starts at
+  Sonic's start). Emulator: 240 LoadSonic calls reached all twelve; LoadKnuckles stayed in the
+  hunt group; a checkpointed reload kept its pick 20 of 20. Not tried: hunters' emerald managers
+  and walkers on speed-stage objects (the board, rails).

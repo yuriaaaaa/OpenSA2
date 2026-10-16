@@ -950,7 +950,8 @@ def main():
     guest_setup(uc, 4, 13)
     run_function(uc, GAME_BASE + lsp, STATE, 0x43D8E0, 0, limit=2_000_000)
     r = start_result(uc)
-    check(r[0] == (0.0, 0.0, 0.0) and r[2] == 4, "a character with no partner is left alone")
+    check(r[0] == (1.0, 2.0, 3.0) and r[2] == 4,
+          "a character with no partner and no entry (Knuckles in City Escape) starts where one who has it does")
 
     # 7. The end-position wrappers swap CharID for the game's call (stopped at the body's start).
     for va, preg, table, label in ((0x43DF30, 0x8A8, 0x1748488, "end position"), (0x43DD50, 0x8A8, 0x174A280, "mission 2/3 end")):
