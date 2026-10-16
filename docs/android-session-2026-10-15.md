@@ -274,3 +274,52 @@ loading its `PLCOMMTN.PRS` (trap: a read outside guest space). RF's models and m
 loaded by its own DLL code (`rfpl_mdlprs.c` and friends), and its menu fixes (rfm_menus.c: fades,
 the stage map's stretching and fill) do not touch the story select anyway. `ModManager.Mod.blocked()`
 now leaves it out at Play with that explanation.
+
+---
+
+# Fourth session (2026-10-16): the story select, round two (0.1.4)
+
+**On the phone (0.1.3):** game.log said "laid out at 16:9: width 2340 -> 1920 ..." (so the
+display ran under the swap), but the story select looked exactly as before, and the SOC sprite
+trace logged nothing: sub_67c0f0's one direct SOCDisplaySprite call did not run. So the frame is
+not laid out from HorizontalResolution inside that function. What static reading showed since:
+
+- The draw primitives (SOC 0x41DC80, njDrawSprite2D 0x77D0B0, njDrawSprite2D_0 0x66EF40,
+  njDrawTexture 0x77F510, njDrawTextureEx 0x77F6B0, njDrawPolygon 0x77F7F0, njDrawPolygon2D
+  0x490FA0) never read H; the functions that do are exactly the runtime's HUD-guarded ones
+  (0x41B0C0, 0x42B230, 0x4200F0, 0x420210, 0x420390, 0x77E980). So a layout-time swap cannot
+  cancel itself out at draw time: whatever draws the frame does not take its x from H in the
+  code the swap covered.
+- The game keeps a second copy of the screen size (HorizontalResolution_Float 0x2670328 /
+  VerticalResolution_Float 0x267032C in the mod loader's headers), read by 0x458EE0 (a 3D
+  projection set-up with 24 callers) and 0x42C390; njDrawSprite2D reads 0x2670320. If either
+  still holds the launcher config's 1280x720 (16:9!) while the screen is 2340x1080, a layout
+  from it would be exactly a 16:9 frame. `vars` lines in game.log now show both.
+- sub_67c0f0 calls 0x666F90 (shared by 37 menu functions, it ends in njDrawTextureEx via
+  0x6B5A60), the viewport (0x420210), njSetScreen (0x77E980) and SetLight (0x487060): it draws
+  a 3D part too.
+- Render Fix (now readable: github.com/shaddatic/sa2b-render-fix) has no story select layout fix;
+  its menu code (rfm_menus.c) fades the SOC sprites and fixes the stage map. Its 2D maths
+  (rj_sprite.c, rj_polygon.c) confirms the 2D space: 640x480 centred, a wide screen showing
+  x from -(ratio-1)*320 to 640+(ratio-1)*320.
+
+**0.1.4 is a diagnostic build with one more experiment:**
+
+- the story select's main (storyMainExec 0x67BDF0) is also laid out at 16:9 (the frame may be
+  placed there and drawn later);
+- helper kinds 7 (memory at a pointer argument: register State offset or stack index, +0x1000 to
+  follow the first word) and 8 (a screen function whose first run opens the log), a `V` plan line
+  (guest memory logged when the log opens and once the screen has settled), per-function budgets
+  (16 lines as the screen opens, 48 after it has been up 4 s), `@ms` and `in <screen function>`
+  on every line, re-opening when another screen function first runs 3 s or more later, and a
+  spinlock so lines from different threads do not mix (`-mno-outline-atomics` keeps it inline);
+- traced: SOC sprite, full-screen background, viewport, screen rectangle, 0x4200F0, 0x42B230,
+  0x666F90, njDrawSprite2D (both), njDrawTextureEx, njDrawTexture, njDrawPolygon,
+  njDrawPolygon2D, njSetScreen, and the dispatch (first call of each address).
+
+**What to do with the log:** find the lines whose geometry is the frame (a background quad or
+sprite spanning 0..1920 px, or -200..653 in 640x480 units, at y 0..480), read their `ret`
+(the guest call site) and `in`, and fix it there: a wrapper that shifts x by
+(H - V*16/9)/2 for those call sites (or stretches the background to the full width), or, if the
+`vars` show the 1280x720 copy, keeping that copy at the real size while the story select runs.
+

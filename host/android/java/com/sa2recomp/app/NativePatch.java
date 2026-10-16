@@ -63,10 +63,23 @@ final class NativePatch {
             {{0, 0x174A280}, {1, 0x174A3A0}, {4, 0x174A460}, {5, 0x174A540}, {7, 0x174A600}, {6, 0x174A6E0}},
     };
     private static final int[] TABLE_ENTRY = {0x2C, 0x2C, 0x20};
-    /** The story select's display (it lays out the 2012 port's 16:9 menu sprites from the screen
-     * width), the port's sprite call it makes them with, and the screen size the game keeps. */
-    private static final int STORY_SELECT_DISPLAY = 0x67C0F0, SOC_SPRITE = 0x41DC80;
+    /** The story select: its display and main (laid out at 16:9 on wider screens, an experiment),
+     * the menu function that runs it (Menu_StorySelect), and the screen size the game keeps. */
+    private static final int STORY_SELECT_DISPLAY = 0x67C0F0, STORY_SELECT_EXEC = 0x67BDF0, STORY_SELECT_MENU = 0x670A90;
     private static final int H_RES = 0x174BA64, V_RES = 0x174BA68;
+    /** How the story select draws, logged to game.log (kind, stack words or pointer source, address):
+     * the port's sprite call, the full-screen background, the viewport, screen rectangle and two more
+     * functions the runtime's HUD guards cover, the menu function the story select and other menus
+     * share, njDrawSprite2D (sprite on the stack) and its EBX variant, njDrawTextureEx (points at
+     * EAX), njDrawTexture (ECX), njDrawPolygon (first stack word), njDrawPolygon2D (EAX, followed to
+     * its points) and njSetScreen (EAX). */
+    private static final int[][] STORY_TRACES = {
+        {0x41DC80, 4, 10}, {0x41B0C0, 4, 6}, {0x420210, 4, 6}, {0x420390, 4, 4}, {0x4200F0, 4, 6}, {0x42B230, 4, 6},
+        {0x666F90, 4, 8}, {0x77D0B0, 5, 0}, {0x66EF40, 5, 1}, {0x77F6B0, 7, 0x8A8}, {0x77F510, 7, 0x8C8},
+        {0x77F7F0, 7, 1}, {0x490FA0, 7, 0x18A8}, {0x77E980, 7, 0x8A8}};
+    /** Guest memory logged as the story select opens and once it has settled: the screen size,
+     * the port's other copy of it (0x2670328) and its neighbours, the current menu, the frame count. */
+    private static final int[][] STORY_VARS = {{0x174BA60, 4}, {0x2670318, 8}, {0x1D7BB10, 1}, {0x174B038, 3}};
     static final String MENU_PREF = "menu_169";
 
     /** A playable character: its Load function (void(int player)) and its CharID. */
@@ -258,7 +271,7 @@ final class NativePatch {
                     String n = cstr(str, name);
                     if (n.equals("sa2_guest_fast_base") || n.equals("__remill_read_memory_32")
                         || n.equals("__remill_function_return") || n.equals("g_hud43")
-                        || n.equals("g_hud43_swapped") || n.equals("g_hud43_real"))
+                        || n.equals("g_hud43_swapped") || n.equals("g_hud43_real") || n.equals("sa2_ft_dispatch"))
                         lib.named.put(n, new long[] {value, sz});
                 }
             }
@@ -513,7 +526,7 @@ final class NativePatch {
     }
 
     /** The plan for these codes and swaps against `lib` (`code`: the guest's code sections, or null;
-     * `menu`: lay the story select out at 16:9 on wider screens). */
+     * `menu`: the story select's wide-screen experiment and its drawing log). */
     static Plan build(Lib lib, List<CodeList.Code> codes, Map<String, String> swaps, long[][] code, boolean menu) {
         Plan plan = new Plan();
         Map<Integer, String[]> redirects = new LinkedHashMap<>();   // from -> {to, label}
@@ -566,12 +579,13 @@ final class NativePatch {
             long[] fb = lib.named.get("sa2_guest_fast_base");
             if (fb != null && (needWrap || menu)) b.append(String.format(Locale.ROOT, "G %x %x\n", fb[0], GUEST_SIZE));
             if (menu) {
-                // The story select: the port's menu sprites there are laid out for a 16:9 screen from
-                // its left edge; laid out as on a 16:9 screen, the layout is centred. The runtime's
-                // HUD-at-4:3 guards keep the viewport and projection at the real width meanwhile.
+                // The story select draws its background, title and button hints in a 16:9 frame
+                // from the screen's left edge. The experiment: its display and main read the width
+                // of a 16:9 screen (as the runtime's HUD at 4:3 does for the HUD, its guards keeping
+                // the viewport and projection at the real width). Laying out the display alone
+                // changed nothing on a device (0.1.3), so the trace below is what the fix needs.
                 long[] hud = lib.named.get("g_hud43"), sw = lib.named.get("g_hud43_swapped"),
-                       real = lib.named.get("g_hud43_real"), disp = lib.fns.get(STORY_SELECT_DISPLAY),
-                       soc = lib.fns.get(SOC_SPRITE);
+                       real = lib.named.get("g_hud43_real"), disp = lib.fns.get(STORY_SELECT_DISPLAY);
                 if (fb == null || hud == null || sw == null || real == null || disp == null
                     || (sw[1] != 1 && sw[1] != 4) || redirects.containsKey(STORY_SELECT_DISPLAY)) {
                     plan.said.add("Story select at 16:9: this build of the game lacks what it needs, so it is left as it is");
@@ -581,11 +595,37 @@ final class NativePatch {
                     b.append(String.format(Locale.ROOT, "W %x %x %x %x %s %s\n", disp[0], disp[1], 3, 0,
                                            hex(lib.bytes(disp[0], 16)), "story select at 16:9"));
                     plan.patches++;
-                    plan.said.add("Story select: its 16:9 menu is centred on wider screens (Settings to turn off)");
-                    if (soc != null && !redirects.containsKey(SOC_SPRITE)) {
-                        // Its sprite calls, logged for the first few frames (game.log), to finish the job.
-                        b.append(String.format(Locale.ROOT, "W %x %x %x %x %s %s\n", soc[0], soc[1], 4, 10,
-                                               hex(lib.bytes(soc[0], 16)), "story select sprites (traced)"));
+                    long[] exec = lib.fns.get(STORY_SELECT_EXEC);
+                    if (exec != null && !redirects.containsKey(STORY_SELECT_EXEC)) {
+                        b.append(String.format(Locale.ROOT, "W %x %x %x %x %s %s\n", exec[0], exec[1], 3, 0,
+                                               hex(lib.bytes(exec[0], 16)), "story select main at 16:9"));
+                        plan.patches++;
+                    }
+                    plan.said.add("Story select (wide screens): an experimental fix, and a record of how it draws "
+                                  + "in game.log for the next one (Settings to turn off)");
+                    // How the screen draws, logged to game.log from the moment the story select runs
+                    // (a budget of lines per function as it opens, and again once it has been up a few
+                    // seconds), to finish this: its draws and their arguments, the guest values the
+                    // layout can come from, and the first call of each function the game dispatches to
+                    // (the objects on screen).
+                    long[] menuFn = lib.fns.get(STORY_SELECT_MENU);
+                    if (menuFn != null && !redirects.containsKey(STORY_SELECT_MENU)) {
+                        b.append(String.format(Locale.ROOT, "W %x %x %x %x %s %s\n", menuFn[0], menuFn[1], 8, 0,
+                                               hex(lib.bytes(menuFn[0], 16)), "story select menu (opens the drawing log)"));
+                        plan.patches++;
+                    }
+                    for (int[] v : STORY_VARS) b.append(String.format(Locale.ROOT, "V %x %x\n", v[0], v[1]));
+                    for (int[] t : STORY_TRACES) {
+                        long[] f = lib.fns.get(t[0]);
+                        if (f == null || redirects.containsKey(t[0])) continue;
+                        b.append(String.format(Locale.ROOT, "W %x %x %x %x %s %s\n", f[0], f[1], t[1], t[2],
+                                               hex(lib.bytes(f[0], 16)), String.format(Locale.ROOT, "trace 0x%X", t[0])));
+                        plan.patches++;
+                    }
+                    long[] dsp = lib.named.get("sa2_ft_dispatch");
+                    if (dsp != null) {
+                        b.append(String.format(Locale.ROOT, "W %x %x %x %x %s %s\n", dsp[0], dsp[1], 6, 0,
+                                               hex(lib.bytes(dsp[0], 16)), "trace dispatch"));
                         plan.patches++;
                     }
                 }

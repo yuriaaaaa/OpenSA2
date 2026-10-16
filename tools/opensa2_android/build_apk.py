@@ -82,7 +82,7 @@ def make_icon(src: Path, res: Path) -> None:
 HELPER_SRC = ANDROID / "native" / "opensa2_patch.c"
 HELPER_FLAGS = ["--target=aarch64-linux-android29", "-O2", "-fPIC", "-fvisibility=hidden", "-ffreestanding",
                 "-fno-builtin", "-fno-stack-protector", "-fno-exceptions", "-fno-asynchronous-unwind-tables",
-                "-nostdlib", "-shared", "-fuse-ld=lld", "-Wl,-soname,libopensa2patch.so",
+                "-mno-outline-atomics", "-nostdlib", "-shared", "-fuse-ld=lld", "-Wl,-soname,libopensa2patch.so",
                 "-Wl,-z,max-page-size=16384", "-Wl,--hash-style=both", "-Wl,-z,now", "-Wl,--build-id=sha1",
                 "-Wall", "-Wextra", "-Werror"]
 
@@ -117,8 +117,8 @@ def main() -> int:
     ap.add_argument("--icon", type=Path)
     ap.add_argument("--keystore", type=Path)
     ap.add_argument("--ndk", type=Path, help="an Android NDK, for the native patch helper's clang")
-    ap.add_argument("--version-name", default="0.1.3-opensa2")
-    ap.add_argument("--version-code", type=int, default=10400)
+    ap.add_argument("--version-name", default="0.1.4-opensa2")
+    ap.add_argument("--version-code", type=int, default=10500)
     a = ap.parse_args()
 
     bt = a.sdk / "build-tools" / BUILD_TOOLS

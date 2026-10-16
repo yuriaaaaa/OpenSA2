@@ -152,6 +152,7 @@ class Sys:
         self.err = b""
         self.mmap_at = MMAP_BASE
         self.mprotects = []
+        self.now_ms = 1_000_000      # CLOCK_MONOTONIC, moved on by the tests
 
     def hook(self, uc, intno, _):
         if intno != 2:
@@ -210,6 +211,9 @@ class Sys:
             self.uc.mem_protect(a[0], (a[1] + 0xFFF) & ~0xFFF, self.prot(a[2]))
             return 0
         if n == 215:
+            return 0
+        if n == 113:  # clock_gettime
+            self.uc.mem_write(a[1], struct.pack("<qq", self.now_ms // 1000, (self.now_ms % 1000) * 1_000_000))
             return 0
         raise RuntimeError(f"system call {n}")
 
@@ -399,10 +403,17 @@ def boot(game, patch, plan_text):
 def layout_checks(game, patch, check):
     """Kind 3 (laid out at 16:9) around sub_86eac0, which calls the ret function sub_6fe430,
     itself traced (kind 4): inside, HorizontalResolution reads 1920 for a 2340x1080 screen and the
-    runtime's HUD guard state says "swapped, real width 2340"; after, all of it is as before."""
+    runtime's HUD guard state says "swapped, real width 2340"; after, all of it is as before. And
+    the drawing log: shut until a kind-8 (or kind-3) wrapper runs, a budget of lines per function
+    as the screen opens and another a few seconds later, a sprite (kind 5), memory at a pointer
+    argument (kind 7) and the dispatch (kind 6)."""
     sym = game.syms
     caller, csize = sym["sub_86eac0"]
     callee, esize = sym["sub_6fe430"]
+    gate, gsize = sym["sub_863dd0"]
+    ptrf, psize = sym["sub_7f4700"]
+    ptrd, pdsize = sym["sub_8704f0"]
+    gate2, g2size = sym["sub_870580"]
 
     def first16(v):
         return game.b[game.vaddr_to_off(v):game.vaddr_to_off(v) + 16].hex()
@@ -416,20 +427,56 @@ def layout_checks(game, patch, check):
         f"G {fb:x} 20000000",
         "A 174ba64 174ba68 10 9",
         f"U {hud:x} {sw:x} {swsize:x} {real:x}",
+        "V 174ba64 2",
         f"W {caller:x} {csize:x} 3 0 {first16(caller)} a screen laid out at 16:9",
         f"W {callee:x} {esize:x} 4 4 {first16(callee)} a traced call",
+        f"W {sym['sub_66b6d0'][0]:x} {sym['sub_66b6d0'][1]:x} 5 1 {first16(sym['sub_66b6d0'][0])} a traced sprite draw",
+        f"W {sym['sa2_ft_dispatch'][0]:x} {sym['sa2_ft_dispatch'][1]:x} 6 0 {first16(sym['sa2_ft_dispatch'][0])} dispatch",
+        f"W {gate:x} {gsize:x} 8 0 {first16(gate)} the screen's own function",
+        f"W {gate2:x} {g2size:x} 8 0 {first16(gate2)} another screen's function",
+        f"W {ptrf:x} {psize:x} 7 8a8 {first16(ptrf)} a draw with its points at EAX",
+        f"W {ptrd:x} {pdsize:x} 7 1001 {first16(ptrd)} a draw with a structure on the stack",
+        "W 1000 10 7 9f1 00000000000000000000000000000000 a refused register offset",
     ]) + "\n"
     uc, sc = boot(game, patch, plan.encode())
     log = sc.err.decode()
     print(log, end="")
-    check("2 of 2 patch(es) applied" in log, "layout: both wrappers applied")
+    check("8 of 8 patch(es) applied" in log, "log: the eight wrappers applied (the bad line refused)")
     gb = guest_base_var(uc, game)
     uc.mem_write(gb, struct.pack("<Q", GUEST))
-    for a in (0x174B000, 0x1F0000, 0x200000, 0x210000):
+    for a in (0x174B000, 0x1F0000, 0x200000, 0x210000, 0x300000):
         try:
             uc.mem_map(GUEST + a, 0x10000 if a >= 0x1F0000 else 0x1000, UC_PROT_READ | UC_PROT_WRITE)
         except UcError:
             pass
+    uc.mem_write(GUEST + 0x174BA64, struct.pack("<ff", 2340.0, 1080.0))
+
+    def call(fn_va, native, regs=None, ret=0x401234):
+        st = bytearray(0x1000)
+        struct.pack_into("<I", st, 0x908, 0x200000)
+        struct.pack_into("<I", st, 0x918, 0x210100)
+        for off, v in (regs or {}).items():
+            struct.pack_into("<I", st, off, v)
+        uc.mem_write(STATE, bytes(st))
+        uc.mem_write(GUEST + 0x200000, struct.pack("<I", ret))
+        run_function(uc, GAME_BASE + native, STATE, fn_va, 0, limit=100000)
+        return bytes(uc.mem_read(STATE, 0x1000))
+
+    # The log is shut until the screen's own function runs.
+    call(0x6FE430, callee)
+    check("trace 0x6fe430" not in sc.err.decode(), "log: shut before the screen opens")
+    sc.now_ms += 10
+    s2 = call(0x863DD0, gate, ret=0x401240)
+    out = sc.err.decode()
+    check("trace: 0x863dd0 ran, so its screen is open" in out and "enter 0x863dd0 @0\n" in out,
+          "gate: its first run opens the log, and says it entered")
+    check("vars at open 0x174ba64 0x45124000 0x44870000" in out, "gate: the plan's guest memory is logged as it opens")
+    check(u32(s2, 0x908) == 0x200004 and u32(s2, 0x9A8) == 0x401240, "gate: the wrapped function returned normally")
+    sc.now_ms += 7
+    call(0x6FE430, callee, {0x8A8: 0x11, 0x8C8: 0x22, 0x8D8: 0x33})
+    check("trace 0x6fe430 ret 0x401234 eax 0x11 ecx 0x22 edx 0x33 args 0x0 0x0 0x0 0x0 @7\n" in sc.err.decode(),
+          "trace: registers, stack words and the time since the screen opened")
+
     seen = []
 
     def at_body(u, a, size, d):
@@ -441,14 +488,7 @@ def layout_checks(game, patch, check):
     def run(h, v):
         seen.clear()
         uc.mem_write(GUEST + 0x174BA64, struct.pack("<ff", h, v))
-        st = bytearray(0x1000)
-        struct.pack_into("<I", st, 0x908, 0x200000)
-        struct.pack_into("<I", st, 0x918, 0x210100)
-        struct.pack_into("<I", st, 0x8A8, 0x1234)
-        uc.mem_write(STATE, bytes(st))
-        uc.mem_write(GUEST + 0x200000, struct.pack("<I", 0x401234))
-        run_function(uc, GAME_BASE + caller, STATE, 0x86EAC0, 0, limit=100000)
-        s2 = bytes(uc.mem_read(STATE, 0x1000))
+        s2 = call(0x86EAC0, caller, {0x8A8: 0x1234})
         after = (u32(bytes(uc.mem_read(GUEST + 0x174BA64, 4)), 0),
                  struct.unpack("<i", bytes(uc.mem_read(GAME_BASE + hud, 4)))[0],
                  bytes(uc.mem_read(GAME_BASE + sw, 1))[0])
@@ -465,13 +505,84 @@ def layout_checks(game, patch, check):
     check(regs == (0x200004, 0x401234), "layout: the wrapped function returned normally")
     log2 = sc.err.decode()
     check("laid out at 16:9: width 2340 -> 1920" in log2, "layout: it says so once")
-    check("trace 0x6fe430 ret 0x86eacd" in log2, "trace: the call inside is logged with its return address")
-    n_trace = log2.count("trace ")
+    check("enter 0x86eac0" in log2, "layout: and that it entered")
+    check("trace 0x6fe430 ret 0x86eacd" in log2 and " in 0x86eac0\n" in log2,
+          "trace: the call inside is logged with its return address and the screen function it is in")
     inside, after, regs = run(1920.0, 1080.0)
     check(inside and inside[0][0] == f(1920.0) and inside[0][2] == 0, "layout: a 16:9 screen is left alone")
-    check(log2.count("trace ") == n_trace and sc.err.decode().count("trace ") == n_trace,
-          "trace: nothing is logged outside a layout")
     uc.hook_del(hk)
+    uc.mem_write(GUEST + 0x174BA64, struct.pack("<ff", 2340.0, 1080.0))
+
+    # The budgets: 16 lines as the screen opens (3 used above), none until it has been up 4 s,
+    # then 48 more; another screen function's first run, later, opens the log again.
+    n0 = sc.err.decode().count("trace 0x6fe430")
+    for _ in range(40):
+        call(0x6FE430, callee)
+    n1 = sc.err.decode().count("trace 0x6fe430")
+    check(n1 == 16, f"budget: 16 lines as the screen opens ({n0} -> {n1})")
+    sc.now_ms += 4000
+    for _ in range(140):
+        call(0x6FE430, callee)
+    out = sc.err.decode()
+    n2 = out.count("trace 0x6fe430")
+    check(n2 == 16 + 48 and "the screen has been up 4000 ms; logging again" in out and "vars later 0x174ba64" in out,
+          f"budget: 48 more once the screen has been up 4 s ({n2 - n1} more), with the memory again")
+    call(0x6FE430, callee)
+    check(sc.err.decode().count("trace 0x6fe430") == n2, "budget: then nothing more")
+    call(0x870580, gate2)
+    call(0x6FE430, callee)
+    out = sc.err.decode()
+    check("trace: 0x870580 ran, so its screen is open" in out and out.count("trace 0x6fe430") == n2 + 1
+          and out.count("vars at open") == 2, "budget: another screen function, seconds later, opens the log again")
+
+    # Kind 5: a sprite draw with the sprite in EBX, logged with its NJS_SPRITE and NJS_TEXANIM.
+    spr, _ = sym["sub_66b6d0"]
+    uc.mem_write(GUEST + 0x300000, struct.pack("<5fiII", -200.0, 12.0, -1.0, 2.0, 0.5, 0, 0x300100, 0x300200))
+    uc.mem_write(GUEST + 0x300200 + 2 * 20, struct.pack("<10h", 640, 480, 320, 240, 0, 0, 255, 255, 7, 0))
+    call(0x66B6D0, spr, {0x8A8: 2, 0x8B8: 0x300000})
+    line = [l for l in sc.err.decode().splitlines() if "sprite 0x66b6d0" in l]
+    print("  " + (line[0] if line else "(no sprite line)"))
+    want_p = " ".join(hex(x) for x in struct.unpack("<8I", struct.pack("<5fiII", -200.0, 12.0, -1.0, 2.0, 0.5, 0, 0x300100, 0x300200)))
+    check(bool(line) and "ret 0x401234 n 0x2 p " + want_p in line[0] and "anim 0x1e00280 0xf00140" in line[0]
+          and " H 0x45124000 @" in line[0], "sprite: the sprite, its animation entry and the screen width are logged")
+
+    # Kind 7: the 24 words at EAX; and a structure on the stack followed to its points.
+    pts = struct.pack("<24f", *[float(i) for i in range(24)])
+    uc.mem_write(GUEST + 0x300400, pts)
+    call(0x7F4700, ptrf, {0x8A8: 0x300400, 0x8C8: 4})
+    line = [l for l in sc.err.decode().splitlines() if l.startswith("opensa2-patch: ptr 0x7f4700")]
+    print("  " + (line[0] if line else "(no ptr line)"))
+    want = " ".join(hex(x) for x in struct.unpack("<24I", pts))
+    check(bool(line) and f"ecx 0x4 edx 0x0 arg1 0x0 at 0x300400 {want} @" in line[0], "ptr: the 24 words at EAX")
+    uc.mem_write(GUEST + 0x300600, struct.pack("<4I", 0x300400, 0x300700, 0, 4) + bytes(80))
+    st_ret = 0x401250
+    uc.mem_write(GUEST + 0x200004, struct.pack("<I", 0x300600))
+    s2 = call(0x8704F0, ptrd, ret=st_ret)
+    uc.mem_write(GUEST + 0x200004, struct.pack("<I", 0x300600))
+    s2 = call(0x8704F0, ptrd, ret=st_ret)
+    line = [l for l in sc.err.decode().splitlines() if l.startswith("opensa2-patch: ptr 0x8704f0")]
+    print("  " + (line[0][:160] + " ..." if line else "(no ptr line)"))
+    want8 = " ".join(hex(x) for x in struct.unpack("<8I", pts[:32]))
+    check(bool(line) and "arg1 0x300600 at 0x300600 0x300400 0x300700 0x0 0x4" in line[0]
+          and f"then 0x300400 {want8} @" in line[0], "ptr: a structure on the stack, followed to its points")
+    check(u32(s2, 0x908) == 0x200004 and u32(s2, 0x9A8) == st_ret, "ptr: the wrapped function returned normally")
+
+    # Kind 6: the dispatch, through the runtime's real table.
+    bring_up(uc, game)
+    dsp, _ = sym["sa2_ft_dispatch"]
+    st = bytearray(0x1000)
+    struct.pack_into("<I", st, 0x908, 0x200000)
+    uc.mem_write(STATE, bytes(st))
+    uc.mem_write(GUEST + 0x200000, struct.pack("<I", 0x401238))
+    uc.reg_write(UC_ARM64_REG_X3, 0)
+    run_function(uc, GAME_BASE + dsp, 0x6FE430, STATE, 0x6FE430, limit=200000)
+    s3 = bytes(uc.mem_read(STATE, 0x1000))
+    check("call 0x6fe430 ret 0x401238 @" in sc.err.decode(), "dispatch: the first call to an address is logged")
+    check(u32(s3, 0x908) == 0x200004 and u32(s3, 0x9A8) == 0x401238, "dispatch: and the call is made (ret function)")
+    n_call = sc.err.decode().count("call 0x6fe430")
+    uc.mem_write(STATE, bytes(st))
+    run_function(uc, GAME_BASE + dsp, 0x6FE430, STATE, 0x6FE430, limit=200000)
+    check(sc.err.decode().count("call 0x6fe430") == n_call, "dispatch: a second call to it is not logged again")
 
 
 def main():

@@ -60,11 +60,16 @@
  *   P <char id> <partner char id>
  *   A <HorizontalResolution va> <VerticalResolution va> <num> <den>   (layout wrappers' aspect)
  *   U <off of g_hud43> <off of g_hud43_swapped> <its size, 1 or 4> <off of g_hud43_real>
+ *   V <guest va> <dwords>        (guest memory logged when a traced screen opens, and later)
  * where an offset is from libsa2game.so's load address (its symbol value). A W line's kind is 0-2
  * for the position tables (its fourth field the State offset of the player's register), 3 for a
  * function laid out at A's aspect (the runtime's HUD guards, U, keep the real width for the
- * viewport and projection inside it) and 4 for a traced function (fourth field: how many stack
- * words to log, only while a kind-3 wrapper is on).
+ * viewport and projection inside it), and for working out how a screen draws, 4-8: logged calls
+ * (4: EAX, ECX, EDX and the first stack words, the fourth field how many; 5: a Ninja 2D sprite;
+ * 6: the runtime's dispatch; 7: memory at a pointer argument, the fourth field the register's
+ * State offset or a stack word's index, plus 0x1000 to follow the pointer found there too) and 8,
+ * a function whose first run opens the log (as does a kind-3 wrapper's). Each logged function has
+ * a budget of lines as the screen opens and another once it has been up a few seconds.
  */
 #include <stddef.h>
 #include <stdint.h>
@@ -76,6 +81,7 @@
 #define SYS_munmap 215
 #define SYS_mmap 222
 #define SYS_mprotect 226
+#define SYS_clock_gettime 113
 
 #define AT_FDCWD (-100)
 #define O_RDONLY 0
@@ -86,7 +92,8 @@
 #define MAP_ANONYMOUS 0x20
 
 #define MAX_PATCHES 64
-#define MAX_WRAPS 8
+#define MAX_WRAPS 24
+#define MAX_VARS 8
 #define MAX_CHARS 32
 #define PLAN_MAX (64 * 1024)
 #define BIG_MAX (1024 * 1024)
@@ -117,6 +124,13 @@ static long sys_mmap(size_t n, int prot) {
     return sys6(SYS_mmap, 0, (long)n, prot, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 }
 static void sys_munmap(uintptr_t a, size_t n) { sys6(SYS_munmap, (long)a, (long)n, 0, 0, 0, 0); }
+static uint64_t now_ms(void) {
+    struct {
+        long s, ns;
+    } t = {0, 0};
+    sys6(SYS_clock_gettime, 1 /* CLOCK_MONOTONIC */, (long)&t, 0, 0, 0, 0);
+    return (uint64_t)t.s * 1000u + (uint64_t)t.ns / 1000000u;
+}
 
 /* The compiler may call these for copies and clears; there is no C library to supply them. Hidden:
  * a preloaded library's exported memcpy would replace the C library's for the whole game. */
@@ -146,7 +160,7 @@ static int starts(const char *s, const char *p) {
     return 1;
 }
 
-static char g_line[512];
+static char g_line[1024];
 static size_t g_len;
 
 static void put(const char *s) {
@@ -173,13 +187,18 @@ static void put_dec(uint64_t v) {
     } while (v && i > 0);
     put(b + i);
 }
+/* One line at a time: the game's threads can log at once (the dispatch runs on all of them). */
+static volatile char g_line_lock;
 static void begin(void) {
+    while (__atomic_test_and_set(&g_line_lock, __ATOMIC_ACQUIRE)) {
+    }
     g_len = 0;
     put("opensa2-patch: ");
 }
 static void end(void) {
     put("\n");
     sys_write(2, g_line, g_len);
+    __atomic_clear(&g_line_lock, __ATOMIC_RELEASE);
 }
 static void say(const char *s) {
     begin();
@@ -258,10 +277,15 @@ typedef struct {
 typedef struct {
     lifted_fn orig;
     uint32_t preg, kind;    /* kinds 0-2: position tables (preg: the player's register);
-                               3: laid out at an aspect; 4: traced (preg: stack words to log) */
+                               3: laid out at an aspect; 4-8: logged (above) */
+    int early, late, said;  /* lines left as the screen opens and later; said "enter" */
 } wrap_t;
 
-enum { WRAP_LAYOUT = 3, WRAP_TRACE = 4 };
+enum { WRAP_LAYOUT = 3, WRAP_TRACE = 4, WRAP_SPRITE = 5, WRAP_DISPATCH = 6, WRAP_PTR = 7, WRAP_GATE = 8 };
+#define TRACE_EARLY 16
+#define TRACE_LATE 48
+#define TRACE_LATER_MS 4000
+#define TRACE_REARM_MS 3000
 
 static patch_t g_p[MAX_PATCHES];
 static int g_n;
@@ -285,7 +309,18 @@ static uint8_t g_partner[MAX_CHARS];
 static uintptr_t g_base;
 static uint32_t g_h_va, g_v_va, g_num, g_den;
 static uint64_t g_hud_off, g_sw_off, g_sw_size, g_real_off;
-static int g_in_layout, g_layout_said, g_trace_left = 48;
+static int g_in_layout, g_layout_said;
+/* The log of how a screen draws: shut until a kind-3 or kind-8 wrapper first runs; the time it
+ * opened; whether the later budget has begun; the innermost such wrapper running (its guest
+ * address, "in" on each line). */
+static int g_trace_gate, g_later, g_disp_left = 400;
+static uint64_t g_gate_ms;
+static uint32_t g_in_pc, g_tick;
+static uint32_t g_var_va[MAX_VARS], g_var_n[MAX_VARS];
+static int g_nvars;
+typedef void *(*dispatch_fn)(uint32_t va, void *state, uint32_t pc, void *memory);
+static dispatch_fn g_disp_orig;
+static uint32_t g_disp_seen[1024];
 
 static void label_from(const char *s, char *out, size_t cap) {
     size_t k = 0;
@@ -318,8 +353,9 @@ static void parse_plan(const char *p) {
                 if (!parse_hex(&s, &r->to) || !parse_hex(&s, &r->to_va)) continue;
             } else {
                 if (!parse_hex(&s, &r->wrap_kind) || !parse_hex(&s, &r->preg)) continue;
-                if (r->wrap_kind > WRAP_TRACE || r->preg > 0x9F0) continue;
-                if (r->wrap_kind <= 2 && (r->preg & 3)) continue;
+                if (r->wrap_kind > WRAP_GATE) continue;
+                if (r->wrap_kind == WRAP_PTR ? (r->preg > 0x1FFF || (r->preg & 0xFFF) > 0x9F0) : r->preg > 0x9F0) continue;
+                if ((r->wrap_kind <= 2 || (r->wrap_kind == WRAP_PTR && (r->preg & 0xFFF) >= 0x800)) && (r->preg & 3)) continue;
             }
             if (!parse_bytes16(&s, r->expect)) continue;
             label_from(s, r->label, sizeof r->label);
@@ -351,6 +387,12 @@ static void parse_plan(const char *p) {
                 g_v_va = (uint32_t)b;
                 g_num = (uint32_t)c;
                 g_den = (uint32_t)d;
+            }
+        } else if (t == 'V') {
+            if (parse_hex(&s, &a) && parse_hex(&s, &b) && g_nvars < MAX_VARS && b && b <= 16) {
+                g_var_va[g_nvars] = (uint32_t)a;
+                g_var_n[g_nvars] = (uint32_t)b;
+                g_nvars++;
             }
         } else if (t == 'U') {
             uint64_t e;
@@ -412,13 +454,104 @@ static uint32_t b_of(float f) {
     return x.u;
 }
 
+/* ------------------------------------------------------------------ the drawing log */
+
+static uint8_t *guest(void) { return g_fastbase ? *(uint8_t **)g_fastbase : 0; }
+static uint32_t st32(const void *state, uint32_t off) { return *(const uint32_t *)((const uint8_t *)state + off); }
+static uint32_t esp_of(const void *state) { return st32(state, 0x908) + st32(state, 0x848); }
+
+/* The guest memory the plan names (V lines), one line each. */
+static void log_vars(const char *what) {
+    uint8_t *g = guest();
+    if (!g) return;
+    for (int i = 0; i < g_nvars; i++) {
+        if (!g_ok(g_var_va[i], 4 * g_var_n[i])) continue;
+        begin();
+        put(what);
+        put(" ");
+        put_hex(g_var_va[i]);
+        for (uint32_t k = 0; k < g_var_n[i]; k++) {
+            put(" ");
+            put_hex(g_rd32(g, g_var_va[i] + 4 * k));
+        }
+        end();
+    }
+}
+
+/* A screen function's first run (re)opens the log with fresh budgets, unless another opened it in
+ * the last few seconds (the same screen): if one of them also runs somewhere else first, the screen
+ * that matters still gets its lines. */
+static void gate_open(uint32_t pc) {
+    uint64_t t = now_ms();
+    if (g_trace_gate && t < g_gate_ms + TRACE_REARM_MS) return;
+    g_trace_gate = 1;
+    g_gate_ms = t;
+    g_later = 0;
+    for (int i = 0; i < g_nwrap; i++) {
+        g_wrap[i].early = TRACE_EARLY;
+        g_wrap[i].late = TRACE_LATE;
+    }
+    if (g_disp_left < 200) g_disp_left = 200;
+    begin();
+    put("trace: ");
+    put_hex(pc);
+    put(" ran, so its screen is open: logging what it draws (@ is ms since)");
+    end();
+    log_vars("vars at open");
+}
+
+/* The time since the log opened, and the screen function the line comes from, if any. */
+static void put_ctx(void) {
+    put(" @");
+    put_dec(now_ms() - g_gate_ms);
+    if (g_in_pc) {
+        put(" in ");
+        put_hex(g_in_pc);
+    }
+}
+
+/* Whether wrapper w may log a line now: its own budget as the screen opens, then, once the screen
+ * has been up a few seconds (settled, not sliding in), a second one. */
+static int trace_take(wrap_t *w) {
+    if (!g_trace_gate) return 0;
+    if (w->early > 0) {
+        w->early--;
+        return 1;
+    }
+    if (w->late <= 0) return 0;
+    if (!g_later) {
+        if ((++g_tick & 31u) != 0 || now_ms() < g_gate_ms + TRACE_LATER_MS) return 0;
+        g_later = 1;
+        begin();
+        put("trace: the screen has been up ");
+        put_dec(TRACE_LATER_MS);
+        put(" ms; logging again");
+        end();
+        log_vars("vars later");
+    }
+    w->late--;
+    return 1;
+}
+
+/* A screen function's first run: opens the log (above) and says so. */
+static void say_enter(wrap_t *w, uint32_t pc) {
+    if (w->said) return;
+    w->said = 1;
+    gate_open(pc);
+    begin();
+    put("enter ");
+    put_hex(pc);
+    put_ctx();
+    end();
+}
+
 /* Kind 3: the wrapped function lays itself out for a screen of g_num:g_den when the real one is
  * wider. HorizontalResolution reads V x num/den for the length of the call, as the runtime's HUD
  * at 4:3 does for the HUD (same guards, same state, so those calls keep the real width), and is
  * put back after. A screen no wider than num:den, or a call inside the runtime's own swap, is
- * left alone. */
+ * left alone. Its first run opens the drawing log. */
 static void *wrap_layout(wrap_t *w, void *state, uint32_t pc, void *memory) {
-    uint8_t *g = g_fastbase ? *(uint8_t **)g_fastbase : 0;
+    uint8_t *g = guest();
     if (!g || !g_guest_size || !g_h_va || !g_hud_off || !g_ok(g_h_va, 4) || !g_ok(g_v_va, 4))
         return w->orig(state, pc, memory);
     uint32_t hb = g_rd32(g, g_h_va), vb = g_rd32(g, g_v_va);
@@ -447,14 +580,18 @@ static void *wrap_layout(wrap_t *w, void *state, uint32_t pc, void *memory) {
         put_dec((uint64_t)h);
         end();
     }
+    say_enter(w, pc);
     *real = hb;
     if (g_sw_size == 1) *sw8 = 1;
     else *sw32 = 1;
     *hud = 1;
     g_wr32(g, g_h_va, b_of(h2));
+    uint32_t outer = g_in_pc;
+    g_in_pc = pc;
     g_in_layout++;
     void *r = w->orig(state, pc, memory);
     g_in_layout--;
+    g_in_pc = outer;
     g_wr32(g, g_h_va, hb);
     if (g_sw_size == 1) *sw8 = 0;
     else *sw32 = 0;
@@ -462,38 +599,180 @@ static void *wrap_layout(wrap_t *w, void *state, uint32_t pc, void *memory) {
     return r;
 }
 
-/* Kind 4: logs a call's return address, EAX and its first stack words, while a layout wrapper is
- * on (a budget of lines per session), then makes the call. For working out a screen's drawing. */
+/* Kind 8: a function of the screen being worked out; its first run opens the log, and lines
+ * logged inside it say so. */
+static void *wrap_gate(wrap_t *w, void *state, uint32_t pc, void *memory) {
+    say_enter(w, pc);
+    uint32_t outer = g_in_pc;
+    g_in_pc = pc;
+    void *r = w->orig(state, pc, memory);
+    g_in_pc = outer;
+    return r;
+}
+
+/* Kind 4: logs a call's return address, EAX, ECX, EDX and its first stack words (a cdecl
+ * function's arguments), then makes the call. */
 static void *wrap_trace(wrap_t *w, void *state, uint32_t pc, void *memory) {
-    uint8_t *g = g_fastbase ? *(uint8_t **)g_fastbase : 0;
-    if (g && g_in_layout && g_trace_left > 0) {
-        uint8_t *st = (uint8_t *)state;
-        uint32_t esp = *(uint32_t *)(st + 0x908) + *(uint32_t *)(st + 0x848);
+    uint8_t *g = guest();
+    if (g && trace_take(w)) {
+        uint32_t esp = esp_of(state);
         uint32_t n = w->preg > 12 ? 12 : w->preg;
         if (g_ok(esp, 4 * (n + 1))) {
-            g_trace_left--;
             begin();
             put("trace ");
             put_hex(pc);
             put(" ret ");
             put_hex(g_rd32(g, esp));
             put(" eax ");
-            put_hex(*(uint32_t *)(st + 0x8A8));
+            put_hex(st32(state, 0x8A8));
+            put(" ecx ");
+            put_hex(st32(state, 0x8C8));
+            put(" edx ");
+            put_hex(st32(state, 0x8D8));
+            put(" args");
             for (uint32_t i = 1; i <= n; i++) {
                 put(" ");
                 put_hex(g_rd32(g, esp + 4 * i));
             }
+            put_ctx();
             end();
         }
     }
     return w->orig(state, pc, memory);
 }
 
+/* Kind 5: a Ninja 2D sprite draw (njDrawSprite2D and the like) logged with its NJS_SPRITE (position,
+ * scale, angle, texture list, animation table) and the NJS_TEXANIM entry it draws (size, centre,
+ * UVs, texture), and the screen width it was drawn with; the sprite pointer is the first stack
+ * word (preg 0) or EBX (preg 1). */
+static void *wrap_sprite(wrap_t *w, void *state, uint32_t pc, void *memory) {
+    uint8_t *g = guest();
+    if (g && g_trace_gate) {
+        uint32_t esp = esp_of(state);
+        uint32_t n = st32(state, 0x8A8);
+        uint32_t sp = 0;
+        if (g_ok(esp, 8)) sp = w->preg == 1 ? st32(state, 0x8B8) : g_rd32(g, esp + 4);
+        if (g_ok(esp, 8) && g_ok(sp, 32) && trace_take(w)) {
+            begin();
+            put("sprite ");
+            put_hex(pc);
+            put(" ret ");
+            put_hex(g_rd32(g, esp));
+            put(" n ");
+            put_hex(n);
+            put(" p");
+            for (uint32_t i = 0; i < 8; i++) {      /* x y z sx sy ang tlist tanim */
+                put(" ");
+                put_hex(g_rd32(g, sp + 4 * i));
+            }
+            uint32_t ta = g_rd32(g, sp + 28);
+            if (n < 4096 && g_ok(ta + n * 20, 20)) {
+                put(" anim");
+                for (uint32_t i = 0; i < 5; i++) {  /* sx|sy cx|cy u1|v1 u2|v2 texid|attr */
+                    put(" ");
+                    put_hex(g_rd32(g, ta + n * 20 + 4 * i));
+                }
+            }
+            if (g_h_va && g_ok(g_h_va, 4)) {
+                put(" H ");
+                put_hex(g_rd32(g, g_h_va));
+            }
+            put_ctx();
+            end();
+        }
+    }
+    return w->orig(state, pc, memory);
+}
+
+/* Kind 7: a draw whose argument points at its vertices or parameters (njDrawTexture,
+ * njDrawPolygon2D, njSetScreen...): the 24 words there, and with 0x1000 in preg the 8 words at the
+ * first of them (a structure that points at its points). preg: a register's State offset (0x8A8
+ * EAX ...) or a stack word's index. */
+static void *wrap_ptr(wrap_t *w, void *state, uint32_t pc, void *memory) {
+    uint8_t *g = guest();
+    if (g && g_trace_gate) {
+        uint32_t esp = esp_of(state), src = w->preg & 0xFFFu, at = 0;
+        if (src >= 0x800) at = st32(state, src);
+        else if (g_ok(esp, 4 * (src + 1))) at = g_rd32(g, esp + 4 * src);
+        if (g_ok(esp, 4) && g_ok(at, 96) && trace_take(w)) {
+            begin();
+            put("ptr ");
+            put_hex(pc);
+            put(" ret ");
+            put_hex(g_rd32(g, esp));
+            put(" eax ");
+            put_hex(st32(state, 0x8A8));
+            put(" ecx ");
+            put_hex(st32(state, 0x8C8));
+            put(" edx ");
+            put_hex(st32(state, 0x8D8));
+            put(" arg1 ");
+            put_hex(g_ok(esp, 8) ? g_rd32(g, esp + 4) : 0);
+            put(" at ");
+            put_hex(at);
+            for (uint32_t i = 0; i < 24; i++) {
+                put(" ");
+                put_hex(g_rd32(g, at + 4 * i));
+            }
+            uint32_t at2 = g_rd32(g, at);
+            if ((w->preg & 0x1000u) && g_ok(at2, 32)) {
+                put(" then ");
+                put_hex(at2);
+                for (uint32_t i = 0; i < 8; i++) {
+                    put(" ");
+                    put_hex(g_rd32(g, at2 + 4 * i));
+                }
+            }
+            put_ctx();
+            end();
+        }
+    }
+    return w->orig(state, pc, memory);
+}
+
+/* Kind 6: the runtime's dispatch (sa2_ft_dispatch, every indirect call and jump), logging each
+ * guest address it is asked for the first time once the log is open: which objects' functions a
+ * screen runs. */
+static void *wrap_dispatch(uint32_t va, void *state, uint32_t pc, void *memory) {
+    if (g_trace_gate && g_disp_left > 0) {
+        uint32_t h = (va * 2654435761u) >> 22;
+        for (uint32_t i = 0; i < 1024; i++) {
+            uint32_t k = (h + i) & 1023u;
+            if (g_disp_seen[k] == va) break;
+            if (!g_disp_seen[k]) {
+                g_disp_seen[k] = va;
+                g_disp_left--;
+                uint8_t *g = guest();
+                uint32_t esp = esp_of(state);
+                begin();
+                put("call ");
+                put_hex(va);
+                if (g && g_ok(esp, 4)) {
+                    put(" ret ");
+                    put_hex(g_rd32(g, esp));
+                }
+                put_ctx();
+                end();
+                break;
+            }
+        }
+    }
+    return g_disp_orig(va, state, pc, memory);
+}
+
+/* ------------------------------------------------------------------ every wrapper's entry */
+
 static void *wrap_common(int slot, void *state, uint32_t pc, void *memory) {
     wrap_t *w = &g_wrap[slot];
-    if (w->kind == WRAP_LAYOUT) return wrap_layout(w, state, pc, memory);
-    if (w->kind == WRAP_TRACE) return wrap_trace(w, state, pc, memory);
-    uint8_t *g = g_fastbase ? *(uint8_t **)g_fastbase : 0;
+    switch (w->kind) {
+    case WRAP_LAYOUT: return wrap_layout(w, state, pc, memory);
+    case WRAP_TRACE: return wrap_trace(w, state, pc, memory);
+    case WRAP_SPRITE: return wrap_sprite(w, state, pc, memory);
+    case WRAP_PTR: return wrap_ptr(w, state, pc, memory);
+    case WRAP_GATE: return wrap_gate(w, state, pc, memory);
+    default: break;
+    }
+    uint8_t *g = guest();
     if (g && g_guest_size) {
         uint32_t player = *(uint32_t *)((uint8_t *)state + w->preg);
         if (player < 8 && g_ok(g_co2_va + 4 * player, 4) && g_ok(g_level_va, 2)) {
@@ -514,15 +793,14 @@ static void *wrap_common(int slot, void *state, uint32_t pc, void *memory) {
     return w->orig(state, pc, memory);
 }
 
-static void *wrap0(void *s, uint32_t pc, void *m) { return wrap_common(0, s, pc, m); }
-static void *wrap1(void *s, uint32_t pc, void *m) { return wrap_common(1, s, pc, m); }
-static void *wrap2(void *s, uint32_t pc, void *m) { return wrap_common(2, s, pc, m); }
-static void *wrap3(void *s, uint32_t pc, void *m) { return wrap_common(3, s, pc, m); }
-static void *wrap4(void *s, uint32_t pc, void *m) { return wrap_common(4, s, pc, m); }
-static void *wrap5(void *s, uint32_t pc, void *m) { return wrap_common(5, s, pc, m); }
-static void *wrap6(void *s, uint32_t pc, void *m) { return wrap_common(6, s, pc, m); }
-static void *wrap7(void *s, uint32_t pc, void *m) { return wrap_common(7, s, pc, m); }
-static lifted_fn const g_wrap_fn[MAX_WRAPS] = {wrap0, wrap1, wrap2, wrap3, wrap4, wrap5, wrap6, wrap7};
+#define WRAP_FN(n) \
+    static void *wrap##n(void *s, uint32_t pc, void *m) { return wrap_common(n, s, pc, m); }
+WRAP_FN(0) WRAP_FN(1) WRAP_FN(2) WRAP_FN(3) WRAP_FN(4) WRAP_FN(5) WRAP_FN(6) WRAP_FN(7)
+WRAP_FN(8) WRAP_FN(9) WRAP_FN(10) WRAP_FN(11) WRAP_FN(12) WRAP_FN(13) WRAP_FN(14) WRAP_FN(15)
+WRAP_FN(16) WRAP_FN(17) WRAP_FN(18) WRAP_FN(19) WRAP_FN(20) WRAP_FN(21) WRAP_FN(22) WRAP_FN(23)
+static lifted_fn const g_wrap_fn[MAX_WRAPS] = {
+    wrap0,  wrap1,  wrap2,  wrap3,  wrap4,  wrap5,  wrap6,  wrap7,  wrap8,  wrap9,  wrap10, wrap11,
+    wrap12, wrap13, wrap14, wrap15, wrap16, wrap17, wrap18, wrap19, wrap20, wrap21, wrap22, wrap23};
 
 /* ------------------------------------------------------------------ the process */
 
@@ -708,6 +986,16 @@ static void apply(uintptr_t base, uint64_t psize) {
             int known = g_fastbase && g_guest_size;
             if (r->wrap_kind <= 2) known = known && g_co2_va && g_level_va;
             else if (r->wrap_kind == WRAP_LAYOUT) known = known && g_h_va && g_v_va && g_hud_off && g_sw_off && g_real_off;
+            if (known && r->wrap_kind == WRAP_DISPATCH) {
+                if (g_disp_orig) {
+                    skipped(r, "only one dispatch wrapper is taken");
+                    continue;
+                }
+                g_disp_orig = (dispatch_fn)tramp[i];
+                emit_jump(&e, (uint64_t)wrap_dispatch);
+                r->stub = s;
+                continue;
+            }
             if (!known) {
                 skipped(r, "the plan does not say where the game's data is");
                 continue;
@@ -716,6 +1004,8 @@ static void apply(uintptr_t base, uint64_t psize) {
             w->orig = (lifted_fn)tramp[i];
             w->preg = (uint32_t)r->preg;
             w->kind = (uint32_t)r->wrap_kind;
+            w->early = TRACE_EARLY;
+            w->late = TRACE_LATE;
             emit_jump(&e, (uint64_t)g_wrap_fn[g_nwrap]);
             g_nwrap++;
             r->stub = s;

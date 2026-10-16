@@ -30,7 +30,8 @@ public class SettingsActivity extends Activity {
                 + "lighter on the phone; 4:3 is the original picture with bars at the sides.", 13, 0xFFA8B4C8));
         col.addView(Ui.check(this, "HUD at its original 4:3 positions", p.getBoolean("hud43", true),
                 on -> p.edit().putBoolean("hud43", on).apply()));
-        col.addView(Ui.check(this, "Centre the story select on wide screens (its menu is drawn for 16:9)",
+        col.addView(Ui.check(this, "Story select on wide screens: try the fix for its offset, and log how it "
+                + "draws (experimental)",
                 p.getBoolean(NativePatch.MENU_PREF, true), on -> p.edit().putBoolean(NativePatch.MENU_PREF, on).apply()));
 
         col.addView(Ui.heading(this, "Touch controls"));
