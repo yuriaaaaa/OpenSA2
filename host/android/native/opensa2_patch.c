@@ -91,7 +91,10 @@
  * Kind 15 trades two texture lists for a call while a player is a CharID2 (`S <set> <CharID2> <va>
  * <va>`); kind 16 writes a 16-bit field after a call (`Q <off> <field> <value>`, the fourth field
  * the State offset of the register holding the structure). Kind 17 makes a shared function return
- * at once while a player is one of some CharIDs, outside a set of levels.
+ * at once while a player is one of some CharIDs, outside a set of levels. Kinds 18 and 19 (Sonic_Main,
+ * Sonic_Display) make Sonic and Shadow their super forms in every stage: `X <CharID2> <model file
+ * name va> <texture list name va> <model index>`, `F <LoadMDLFile off> <va> <LoadCharTextures off>
+ * <va>`.
  */
 #include <stddef.h>
 #include <stdint.h>
@@ -311,7 +314,7 @@ typedef struct {
     uint64_t from;          /* the wrapped function's offset (kind 16's Q lines) */
 } wrap_t;
 
-enum { WRAP_LAYOUT = 3, WRAP_TRACE = 4, WRAP_SPRITE = 5, WRAP_DISPATCH = 6, WRAP_PTR = 7, WRAP_GATE = 8, WRAP_FILL = 9, WRAP_RANDOM = 10, WRAP_MOVES = 11, WRAP_RESTART = 12, WRAP_SETLOAD = 13, WRAP_LEVELGATE = 14, WRAP_TEXSWAP = 15, WRAP_POSTSTORE = 16, WRAP_CHARGATE = 17 };
+enum { WRAP_LAYOUT = 3, WRAP_TRACE = 4, WRAP_SPRITE = 5, WRAP_DISPATCH = 6, WRAP_PTR = 7, WRAP_GATE = 8, WRAP_FILL = 9, WRAP_RANDOM = 10, WRAP_MOVES = 11, WRAP_RESTART = 12, WRAP_SETLOAD = 13, WRAP_LEVELGATE = 14, WRAP_TEXSWAP = 15, WRAP_POSTSTORE = 16, WRAP_CHARGATE = 17, WRAP_SUPERMAIN = 18, WRAP_SUPERDISP = 19 };
 #define TRACE_EARLY 16
 #define TRACE_LATE 48
 #define TRACE_LATER_MS 4000
@@ -383,6 +386,18 @@ static int g_nsw;
 static uint64_t g_q_from[MAX_POST];
 static uint32_t g_q_field[MAX_POST], g_q_value[MAX_POST];
 static int g_nq;
+/* Kinds 18 and 19: Sonic and Shadow as their super forms in every stage (X lines: CharID2, the
+ * game's model file and texture list names, the super model's index; F line: LoadMDLFile and
+ * LoadCharTextures). */
+#define MAX_SUPER 2
+static uint32_t g_x_id[MAX_SUPER], g_x_mdl[MAX_SUPER], g_x_tex[MAX_SUPER], g_x_idx[MAX_SUPER];
+static int g_nx;
+static uint64_t g_mdlfn_off, g_texfn_off;
+static uint32_t g_mdlfn_va, g_texfn_va;
+static uint32_t g_sp_co2[2], g_sp_tex[2], g_sp_old[2], g_sp_idx[2], g_sp_failed[2];
+static uint32_t g_sp_lists[8];
+static int g_sp_nlists;
+static uint8_t g_callsave[0x400];
 /* Kind 11: CharObj2Base.CharID2 values read as another for the length of a call (M lines). */
 #define MAX_MOVES 8
 static uint32_t g_cid2_off;
@@ -441,7 +456,7 @@ static void parse_plan(const char *p) {
                 if (!parse_hex(&s, &r->to) || !parse_hex(&s, &r->to_va)) continue;
             } else {
                 if (!parse_hex(&s, &r->wrap_kind) || !parse_hex(&s, &r->preg)) continue;
-                if (r->wrap_kind > WRAP_CHARGATE) continue;
+                if (r->wrap_kind > WRAP_SUPERDISP) continue;
                 if (r->wrap_kind == WRAP_PTR ? (r->preg > 0x1FFF || (r->preg & 0xFFF) > 0x9F0) : r->preg > 0x9F0) continue;
                 if ((r->wrap_kind <= 2 || (r->wrap_kind == WRAP_PTR && (r->preg & 0xFFF) >= 0x800)) && (r->preg & 3)) continue;
             }
@@ -516,6 +531,21 @@ static void parse_plan(const char *p) {
                 g_q_field[g_nq] = (uint32_t)b;
                 g_q_value[g_nq] = (uint32_t)c;
                 g_nq++;
+            }
+        } else if (t == 'X') {
+            if (parse_hex(&s, &a) && parse_hex(&s, &b) && parse_hex(&s, &c) && parse_hex(&s, &d) && g_nx < MAX_SUPER) {
+                g_x_id[g_nx] = (uint32_t)a;
+                g_x_mdl[g_nx] = (uint32_t)b;
+                g_x_tex[g_nx] = (uint32_t)c;
+                g_x_idx[g_nx] = (uint32_t)d;
+                g_nx++;
+            }
+        } else if (t == 'F') {
+            if (parse_hex(&s, &a) && parse_hex(&s, &b) && parse_hex(&s, &c) && parse_hex(&s, &d)) {
+                g_mdlfn_off = a;
+                g_mdlfn_va = (uint32_t)b;
+                g_texfn_off = c;
+                g_texfn_va = (uint32_t)d;
             }
         } else if (t == 'H') {
             if (parse_hex(&s, &a) && g_nhlevel < MAX_HLEVELS) {
@@ -1291,6 +1321,161 @@ static void *wrap_chargate(wrap_t *w, void *state, uint32_t pc, void *memory) {
     return ((lifted_fn)(g_base + g_ret_off))(state, g_ret_va, memory);
 }
 
+/* Calls a lifted function of the game from inside a wrapper, on the same State: EAX and ECX set,
+ * a return address pushed on the guest stack, and every register put back after but EAX, which is
+ * returned. The State's 0x800-0xBFF (the registers, flags and pc) are saved around the call. */
+static uint32_t guest_call(void *state, void *memory, uint64_t off, uint32_t va, uint32_t eax, uint32_t ecx) {
+    uint8_t *g = guest();
+    uint8_t *st = (uint8_t *)state;
+    for (int i = 0; i < 0x400; i++) g_callsave[i] = st[0x800 + i];
+    uint32_t esp = *(uint32_t *)(st + 0x908) - 4;
+    if (!g_ok(esp, 4)) return 0;
+    g_wr32(g, esp, 0x401234);
+    *(uint32_t *)(st + 0x908) = esp;
+    *(uint32_t *)(st + 0x8A8) = eax;
+    *(uint32_t *)(st + 0x8C8) = ecx;
+    ((lifted_fn)(g_base + off))(state, va, memory);
+    uint32_t r = *(uint32_t *)(st + 0x8A8);
+    for (int i = 0; i < 0x400; i++) st[0x800 + i] = g_callsave[i];
+    return r;
+}
+
+/* Kind 18, around Sonic_Main (Sonic's and Shadow's): the first time a player whose CharID2 is an X
+ * line's runs in a stage (not Final Hazard, H set 1), it becomes its super form as Sora's SA2 Super
+ * Sonic does it on transforming: the game's super model (LoadMDLFile of SSONICMDL.PRS, index 328;
+ * SSHADOWMDL.PRS, 355) put in CharacterModels, the super texture list (LoadCharTextures) as the
+ * player's (SonicCharObj2 +0x394, the old one kept for the ball), and the animation list's body
+ * model (the commonest ModelNum) changed to the super model, so Sonic's own motions drive it. */
+static void super_apply(void *state, void *memory, uint8_t *g, int p, uint32_t co2, int k) {
+    uint32_t lst = guest_call(state, memory, g_mdlfn_off, g_mdlfn_va, g_x_mdl[k], 0);
+    uint32_t model = 0, idx = g_x_idx[k];
+    if (lst && g_ok(lst, 8)) {
+        for (int i = 0; i < 1024 && g_ok(lst + 8 * (uint32_t)i, 8); i++) {
+            uint32_t ix = g_rd32(g, lst + 8 * (uint32_t)i);
+            if (ix == 0xFFFFFFFFu) break;
+            if (ix == idx) {
+                model = g_rd32(g, lst + 8 * (uint32_t)i + 4);
+                break;
+            }
+        }
+    }
+    uint32_t cm = 0x1DE9620 + 8 * idx;
+    if (!model || !g_ok(cm, 8)) {
+        g_sp_failed[p] = co2;
+        begin();
+        put("super: no model ");
+        put_dec(idx);
+        put(" from the game's file; left as it is");
+        end();
+        return;
+    }
+    g_wr32(g, cm, idx);
+    g_wr32(g, cm + 4, model);
+    uint32_t tex = guest_call(state, memory, g_texfn_off, g_texfn_va, g_x_tex[k], g_x_tex[k]);
+    if (!tex || !g_ok(co2 + 0x398, 4)) {
+        g_sp_failed[p] = co2;
+        say("super: the super texture list did not load; left as it is");
+        return;
+    }
+    g_sp_old[p] = g_rd32(g, co2 + 0x394);
+    g_wr32(g, co2 + 0x394, tex);
+    g_sp_tex[p] = tex;
+    g_sp_co2[p] = co2;
+    g_sp_idx[p] = idx;
+    uint32_t list = g_rd32(g, co2 + 0x198);
+    int done = 0;
+    for (int i = 0; i < g_sp_nlists; i++) done |= g_sp_lists[i] == list;
+    if (!done && list && g_ok(list, 16 * 203)) {
+        /* the body's model: the commonest ModelNum among the list's entries */
+        uint32_t best = 0, bestn = 0;
+        for (int i = 0; i < 203; i++) {
+            uint32_t m = g_rd16(g, list + 16 * (uint32_t)i + 2), n = 0;
+            for (int j = 0; j < 203; j++) n += g_rd16(g, list + 16 * (uint32_t)j + 2) == m;
+            if (n > bestn) {
+                bestn = n;
+                best = m;
+            }
+        }
+        for (int i = 0; i < 203; i++) {
+            uint32_t a = list + 16 * (uint32_t)i + 2;
+            if (g_rd16(g, a) == best) {
+                g[a] = (uint8_t)idx;
+                g[a + 1] = (uint8_t)(idx >> 8);
+            }
+        }
+        if (g_sp_nlists < 8) g_sp_lists[g_sp_nlists++] = list;
+        begin();
+        put("super: animation list ");
+        put_hex(list);
+        put(": body model ");
+        put_dec(best);
+        put(" -> ");
+        put_dec(idx);
+        put(" in ");
+        put_dec(bestn);
+        put(" entries");
+        end();
+    }
+    begin();
+    put("super: player ");
+    put_dec((uint64_t)p);
+    put(" is the super form (model ");
+    put_dec(idx);
+    put(", textures ");
+    put_hex(tex);
+    put(")");
+    end();
+}
+
+static void *wrap_supermain(wrap_t *w, void *state, uint32_t pc, void *memory) {
+    uint8_t *g = guest();
+    if (g && g_guest_size && g_co2_va && g_level_va && g_ok(g_level_va, 2) && g_mdlfn_off && g_texfn_off) {
+        uint32_t level = g_rd16(g, g_level_va);
+        int fh = 0;
+        for (int i = 0; i < g_nhlevel; i++) fh |= g_hlevel[i] == level && g_hset[i] == 1;
+        for (int p = 0; p < 2 && !fh; p++) {
+            if (!g_ok(g_co2_va + 4 * p, 4)) continue;
+            uint32_t co2 = g_rd32(g, g_co2_va + 4 * p);
+            if (!co2 || !g_ok(co2 + 0x398, 4)) continue;
+            if (g_sp_co2[p] == co2 && g_rd32(g, co2 + 0x394) == g_sp_tex[p]) continue;   /* done */
+            if (g_sp_failed[p] == co2) continue;
+            uint32_t id2 = g[co2 + g_charid_off + 2];
+            for (int k = 0; k < g_nx; k++)
+                if (g_x_id[k] == id2 && g_rd32(g, co2 + 0x394)) {
+                    super_apply(state, memory, g, p, co2, k);
+                    break;
+                }
+        }
+    }
+    return w->orig(state, pc, memory);
+}
+
+/* Kind 19, around Sonic_Display: while a super form is drawn as something its model is not (the
+ * ball, an animation on another model), the old texture list is the player's for the call. */
+static void *wrap_superdisp(wrap_t *w, void *state, uint32_t pc, void *memory) {
+    uint8_t *g = guest();
+    int swapped[2] = {0, 0};
+    if (g && g_guest_size) {
+        for (int p = 0; p < 2; p++) {
+            uint32_t co2 = g_sp_co2[p];
+            if (!co2 || !g_ok(co2 + 0x398, 4) || g_rd32(g, co2 + 0x394) != g_sp_tex[p] || !g_sp_old[p]) continue;
+            int other = 0;
+            uint32_t list = g_rd32(g, co2 + 0x198), cur = g_rd16(g, co2 + 0x178);
+            if (cur < 256 && list && g_ok(list + 16 * cur + 2, 2) && g_rd16(g, list + 16 * cur + 2) != g_sp_idx[p]) other = 1;
+            uint32_t d1 = g_ok(0x1DEA6C0 + 4 * (uint32_t)p, 4) ? g_rd32(g, 0x1DEA6C0 + 4 * (uint32_t)p) : 0;
+            if (d1 && g_ok(d1 + 4, 2) && (g_rd16(g, d1 + 4) & 0x100) && (g[co2 + 0x360] & 0x11)) other = 1;
+            if (other) {
+                g_wr32(g, co2 + 0x394, g_sp_old[p]);
+                swapped[p] = 1;
+            }
+        }
+    }
+    void *r = w->orig(state, pc, memory);
+    for (int p = 0; p < 2; p++)
+        if (swapped[p]) g_wr32(g, g_sp_co2[p] + 0x394, g_sp_tex[p]);
+    return r;
+}
+
 /* ------------------------------------------------------------------ every wrapper's entry */
 
 static void *wrap_common(int slot, void *state, uint32_t pc, void *memory) {
@@ -1310,6 +1495,8 @@ static void *wrap_common(int slot, void *state, uint32_t pc, void *memory) {
     case WRAP_TEXSWAP: return wrap_texswap(w, state, pc, memory);
     case WRAP_POSTSTORE: return wrap_poststore(w, state, pc, memory);
     case WRAP_CHARGATE: return wrap_chargate(w, state, pc, memory);
+    case WRAP_SUPERMAIN: return wrap_supermain(w, state, pc, memory);
+    case WRAP_SUPERDISP: return wrap_superdisp(w, state, pc, memory);
     default: break;
     }
     uint8_t *g = guest();
@@ -1550,6 +1737,8 @@ static void apply(uintptr_t base, uint64_t psize) {
             else if (r->wrap_kind == WRAP_TEXSWAP) known = known && g_co2_va && g_nsw;
             else if (r->wrap_kind == WRAP_POSTSTORE) known = known && g_nq;
             else if (r->wrap_kind == WRAP_CHARGATE) known = known && g_level_va && g_co2_va && g_ret_off;
+            else if (r->wrap_kind == WRAP_SUPERMAIN) known = known && g_level_va && g_co2_va && g_nx && g_mdlfn_off && g_texfn_off;
+            else if (r->wrap_kind == WRAP_SUPERDISP) known = known && g_nx;
             if (r->wrap_kind == WRAP_RANDOM) {
                 uint32_t grp = (uint32_t)r->preg & 3, va = 0;
                 for (int z = 0; z < g_nz; z++)

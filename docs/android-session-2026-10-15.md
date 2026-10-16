@@ -559,3 +559,18 @@ Sonikko's light blue; which texture or model that is was not found yet (asked fo
   0x49BF8B, Super_DispDelay3, 0x49AACB-0x49AAD0 in LoadSuperSonic, 0x6DF2DA, 0x6DF067,
   CheckBreakObject) are inside functions and not done. Super forms are out of random until they
   stop crashing; chosen swaps still offer them.
+
+# Eighteenth session (2026-10-16): 0.1.18
+
+- 0.1.17: the super forms still crash (`character gate: 0x469050 skipped`), a jump to address 0
+  from an object's main. Left there: their Final Hazard objects are not reproducible.
+- The user found Sora's SA2 Super Sonic (GameBanana 340288; source github.com/Sora-yx/SA2-Super-Sonic):
+  a 4,100-line DLL that transforms Sonic in place. Its TransfoSuperSonic: CharacterModels[328] from
+  LoadMDLFile("SSONICMDL.PRS"), TextureList = LoadCharTextures("SSONICTEX"), an AnimationInfo list
+  whose entries use model 328 with Sonic's own motions (ball 30 keeps model 6), Super physics,
+  invincibility; its own Sonic_Display draws the ball with its ss_efftex.
+- Native first cut (kinds 18/19, X/F plan lines, `guest_call`): SonicCharObj2 offsets from the
+  lifted Sonic_Display: AnimInfo.Current +0x178, Animations +0x198, TextureList +0x394; the name
+  strings are the game's own (.rdata 0x8BA9F0..0x8BAA4C). The animation list (static, per
+  character) is changed in place once. Emulator-checked with the bare `ret` standing in for the
+  game's loaders (it hands EAX back). Super Sonic and Super Shadow stay out of random.

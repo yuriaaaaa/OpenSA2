@@ -48,6 +48,10 @@ public class CharactersActivity extends Activity {
         col.addView(Ui.check(this, "Amy and Metal Sonic can Spin Dash (MainMemory's SA2-Amy-Metal-SpinDash, done natively; "
                 + "experimental)", p.getBoolean(NativePatch.MOVES_PREF, true),
                 on -> p.edit().putBoolean(NativePatch.MOVES_PREF, on).apply()));
+        col.addView(Ui.check(this, "Sonic and Shadow are Super Sonic and Super Shadow in every stage (test, after Sora's "
+                + "SA2 Super Sonic: the super model and textures on their own moves; no transforming, rings or aura yet)",
+                p.getBoolean(NativePatch.SUPER_PREF, false),
+                on -> p.edit().putBoolean(NativePatch.SUPER_PREF, on).apply()));
         String[] heads = {"Speed stages", null, "Treasure hunting", null, "Walker shooting", null};
         for (int i = 0; i < NativePatch.SLOTS.length; i++) {
             if (heads[i] != null) col.addView(Ui.heading(this, heads[i]));

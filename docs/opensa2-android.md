@@ -86,6 +86,18 @@ outside Final Hazard their loaders' LastBossPlayerManager_Load (0x0049ECE0) and 
 plays (helper kind 17, by CharID or CharID2 9 and 10), as the SA2 Randomizer patches them (it also changes a few instructions inside
 Super_DispDelay3 and CheckBreakObject, which this port cannot).
 
+**Super Sonic and Super Shadow in every stage** (Characters, a test, off by default), after
+Sora's SA2 Super Sonic (a DLL mod: it keeps Sonic and, on transforming, swaps in the super model,
+textures, motions and physics). The helper does the core of it natively: on Sonic's or Shadow's
+first frame in a stage (Sonic_Main, 0x00717840, kind 18) it calls the game's LoadMDLFile
+(0x00459590) on SSONICMDL.PRS or SSHADOWMDL.PRS and puts model 328 or 355 in CharacterModels,
+calls LoadCharTextures (0x0044C510) on SSONICTEX or SSHADOWTEX for the player's texture list
+(SonicCharObj2 +0x394), and changes the animation list's body model (the commonest ModelNum) to
+the super model, so their own motions drive it; Sonic_Display (0x00720090, kind 19) draws the
+ball, which has no super model, with the old textures. No transforming, ring drain, aura, music or
+physics yet. The helper calls the game's functions on the wrapped call's State (`guest_call`:
+EAX/ECX set, a return address pushed, the registers put back).
+
 **Amy's and Metal Sonic's Spin Dash** (Characters, on by default) follows MainMemory's
 SA2-Amy-Metal-SpinDash: Sonic's spin dash check (0x00723DD5, where that mod nops a CharID2 test)
 runs with Amy read as Sonic and Metal Sonic as Shadow; the spin dash particles (0x00757B30,
