@@ -79,6 +79,8 @@
  * Kind 11 wraps a function of Sonic's action code so that, while it runs, a player whose
  * CharObj2Base.CharID2 is `from` reads `to`, from lines `M <CharID2 offset> <from> <to>` (with
  * the C line's MainCharObj2): Amy and Metal Sonic get the Spin Dash Sonic and Shadow have.
+ * Kind 12 wraps a restart handler (fourth field 0: pause Restart, 1: after a death) and sends it
+ * down the game's restart-with-reload handler, `Y <off> <guest va>`, so random picks again.
  */
 #include <stddef.h>
 #include <stdint.h>
@@ -291,7 +293,7 @@ typedef struct {
     int early, late, said;  /* lines left as the screen opens and later; said "enter" */
 } wrap_t;
 
-enum { WRAP_LAYOUT = 3, WRAP_TRACE = 4, WRAP_SPRITE = 5, WRAP_DISPATCH = 6, WRAP_PTR = 7, WRAP_GATE = 8, WRAP_FILL = 9, WRAP_RANDOM = 10, WRAP_MOVES = 11 };
+enum { WRAP_LAYOUT = 3, WRAP_TRACE = 4, WRAP_SPRITE = 5, WRAP_DISPATCH = 6, WRAP_PTR = 7, WRAP_GATE = 8, WRAP_FILL = 9, WRAP_RANDOM = 10, WRAP_MOVES = 11, WRAP_RESTART = 12 };
 #define TRACE_EARLY 16
 #define TRACE_LATE 48
 #define TRACE_LATER_MS 4000
@@ -322,6 +324,11 @@ static uint64_t g_rng;
 /* After a death past a checkpoint the stage reloads its character: keep that stage's pick (K line:
  * CheckpointRecords, whose first short is the level a checkpoint was touched in). */
 static uint32_t g_cp_va;
+/* Kind 12: a restart sent down the game's own restart-with-reload path (Y line: its offset and
+ * guest address), so that random picks again; g_force_repick makes that reload pick anew. */
+static uint64_t g_reload_off;
+static uint32_t g_reload_va;
+static int g_force_repick;
 static int g_last_k[4] = {-1, -1, -1, -1};
 static uint32_t g_last_level[4];
 /* Kind 11: CharObj2Base.CharID2 values read as another for the length of a call (M lines). */
@@ -382,7 +389,7 @@ static void parse_plan(const char *p) {
                 if (!parse_hex(&s, &r->to) || !parse_hex(&s, &r->to_va)) continue;
             } else {
                 if (!parse_hex(&s, &r->wrap_kind) || !parse_hex(&s, &r->preg)) continue;
-                if (r->wrap_kind > WRAP_MOVES) continue;
+                if (r->wrap_kind > WRAP_RESTART) continue;
                 if (r->wrap_kind == WRAP_PTR ? (r->preg > 0x1FFF || (r->preg & 0xFFF) > 0x9F0) : r->preg > 0x9F0) continue;
                 if ((r->wrap_kind <= 2 || (r->wrap_kind == WRAP_PTR && (r->preg & 0xFFF) >= 0x800)) && (r->preg & 3)) continue;
             }
@@ -420,6 +427,11 @@ static void parse_plan(const char *p) {
                 g_mv_from[g_nmv] = (uint8_t)b;
                 g_mv_to[g_nmv] = (uint8_t)c;
                 g_nmv++;
+            }
+        } else if (t == 'Y') {
+            if (parse_hex(&s, &a) && parse_hex(&s, &b)) {
+                g_reload_off = a;
+                g_reload_va = (uint32_t)b;
             }
         } else if (t == 'K') {
             if (parse_hex(&s, &a)) g_cp_va = (uint32_t)a;
@@ -875,12 +887,14 @@ static void *wrap_random(wrap_t *w, void *state, uint32_t pc, void *memory) {
     if (g && g_guest_size && g_level_va && g_ok(g_level_va, 2)) level = g_rd16(g, g_level_va);
     if (g && g_guest_size && g_cp_va && g_ok(g_cp_va, 2)) cp = g_rd16(g, g_cp_va);
     int k, kept = 0;
-    if (g_last_k[grp] >= 0 && g_last_k[grp] < n && level != 0xFFFF && level == g_last_level[grp] && cp == level) {
+    if (!g_force_repick && g_last_k[grp] >= 0 && g_last_k[grp] < n && level != 0xFFFF &&
+        level == g_last_level[grp] && cp == level) {
         k = g_last_k[grp];
         kept = 1;
     } else {
         k = (int)(rnd() % (uint32_t)n);
     }
+    g_force_repick = 0;
     g_last_k[grp] = k;
     g_last_level[grp] = level;
     begin();
@@ -934,6 +948,41 @@ static void *wrap_moves(wrap_t *w, void *state, uint32_t pc, void *memory) {
     return r;
 }
 
+/* Kind 12: one of the game's restart handlers (fourth field 0: the pause menu's Restart, from the
+ * stage's start; 1: the restart after a death, from a checkpoint if one was touched). Those keep
+ * the character object; the game's own restart-with-reload handler (Y line) fades, tears the
+ * stage down and moves to GameState 5, whose handler deletes the characters and loads them again,
+ * which is where random picks. A pause Restart always goes that way; a death only before any
+ * checkpoint (CheckpointRecords[0].level not the current level). */
+static void *wrap_restart(wrap_t *w, void *state, uint32_t pc, void *memory) {
+    uint8_t *g = guest();
+    if (!g || !g_guest_size || !g_reload_off || !g_level_va || !g_ok(g_level_va, 2))
+        return w->orig(state, pc, memory);
+    if (w->preg == 1 && g_cp_va && g_ok(g_cp_va, 2) && g_rd16(g, g_cp_va) == g_rd16(g, g_level_va)) {
+        if (!w->said) {
+            w->said = 1;
+            begin();
+            put("restart: ");
+            put_hex(pc);
+            put(" after a checkpoint keeps the character");
+            end();
+        }
+        return w->orig(state, pc, memory);
+    }
+    if (!w->said) {
+        w->said = 1;
+        begin();
+        put("restart: ");
+        put_hex(pc);
+        put(" goes the way of ");
+        put_hex(g_reload_va);
+        put(", which loads the character again");
+        end();
+    }
+    g_force_repick = 1;
+    return ((lifted_fn)(g_base + g_reload_off))(state, g_reload_va, memory);
+}
+
 /* ------------------------------------------------------------------ every wrapper's entry */
 
 static void *wrap_common(int slot, void *state, uint32_t pc, void *memory) {
@@ -947,6 +996,7 @@ static void *wrap_common(int slot, void *state, uint32_t pc, void *memory) {
     case WRAP_FILL: return wrap_fill(w, state, pc, memory);
     case WRAP_RANDOM: return wrap_random(w, state, pc, memory);
     case WRAP_MOVES: return wrap_moves(w, state, pc, memory);
+    case WRAP_RESTART: return wrap_restart(w, state, pc, memory);
     default: break;
     }
     uint8_t *g = guest();
@@ -1176,6 +1226,7 @@ static void apply(uintptr_t base, uint64_t psize) {
             else if (r->wrap_kind == WRAP_LAYOUT) known = known && g_h_va && g_v_va && g_hud_off && g_sw_off && g_real_off;
             else if (r->wrap_kind == WRAP_FILL) known = known && g_h_va && g_v_va;
             else if (r->wrap_kind == WRAP_MOVES) known = known && g_co2_va && g_nmv;
+            else if (r->wrap_kind == WRAP_RESTART) known = known && g_level_va && g_reload_off;
             if (r->wrap_kind == WRAP_RANDOM) {
                 uint32_t grp = (uint32_t)r->preg & 3, va = 0;
                 for (int z = 0; z < g_nz; z++)

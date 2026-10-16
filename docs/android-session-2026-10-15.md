@@ -425,3 +425,22 @@ Sonikko's light blue; which texture or model that is was not found yet (asked fo
   Sonic's start). Emulator: 240 LoadSonic calls reached all twelve; LoadKnuckles stayed in the
   hunt group; a checkpointed reload kept its pick 20 of 20. Not tried: hunters' emerald managers
   and walkers on speed-stage objects (the board, rails).
+
+# Ninth session (2026-10-16): 0.1.9
+
+- On the phone (0.1.8): the walkers work in City Escape; Tikal and Chaos give a black screen with
+  the emerald radar (their loaders bring the hunting stage's setup); a crash was seen (game.out
+  traps: reads at 0x4 / 0xC / 0x6B6E617A, also once with Metal Sonic in 0.1.7, and once in a
+  session with no patches, so not tied to one character yet). The hunters are out of the speed
+  group again (bit 2 now only on the mech members).
+- The pause menu's Restart kept the character: correction to the eighth session, a death or a
+  restart does not reload the character. The GameState switch's cases 0x43BA75 (teardown,
+  0x43CE20, the level-start init) and 0x43BAAF (teardown, RestartInitStageRuntime, which reads
+  CheckpointRecords, LoadLevelManager) both bump TimesRestartedOrDied and keep the objects;
+  0x43BB60 fades, tears down and sets GameState 5, whose case 0x43AA00 runs 0x43C970
+  (DeleteObject_ on the characters, LoadCharacters, InitCharacterSound), InitCurrentLevelAndScreenCount
+  and LoadLevelManager, then GameState 7. Helper kind 12 wraps both restart cases and, unless a
+  checkpoint was touched (CheckpointRecords[0].level == CurrentLevel), runs 0x43BB60's body instead
+  (`Y <off> <va>`), with a flag that makes the next random pick a new one. Emulator-checked with
+  stand-ins; not yet tried in the game: which case is the pause Restart and which the death is a
+  guess, so both take the checkpoint rule (a Restart after a checkpoint keeps the character).

@@ -516,6 +516,53 @@ def moves_checks(game, patch, check):
     uc.hook_del(hk)
 
 
+def restart_checks(game, patch, check):
+    """Kind 12 around the ret function sub_7f4700 standing in for a restart handler, the Y line
+    naming LoadSonic as the restart-with-reload handler: before a checkpoint the call reaches
+    LoadSonic's entry with pc 0x716E00; after one (CheckpointRecords[0].level the current level)
+    it runs its own body."""
+    sym = game.syms
+    fn, fsize = sym["sub_7f4700"]
+    rl, _ = sym["sub_716e00"]
+    first16 = game.b[game.vaddr_to_off(fn):game.vaddr_to_off(fn) + 16].hex()
+    fb, _ = sym["sa2_guest_fast_base"]
+    plan = "\n".join(["opensa2-patch 1", f"G {fb:x} 20000000", "C 1934b70 1de9600 1 5b", "K 1934b88",
+                      f"Y {rl:x} 716e00", f"W {fn:x} {fsize:x} c 1 {first16} restart"]) + "\n"
+    uc, sc = boot(game, patch, plan.encode())
+    check("1 of 1 patch(es) applied" in sc.err.decode(), "restart: the wrapper applied")
+    gb = guest_base_var(uc, game)
+    uc.mem_write(gb, struct.pack("<Q", GUEST))
+    for a in (0x1934000, 0x1F0000):
+        try:
+            uc.mem_map(GUEST + a, 0x10000 if a == 0x1F0000 else 0x1000, UC_PROT_READ | UC_PROT_WRITE)
+        except UcError:
+            pass
+    seen = []
+
+    def at(u, a, size, d):
+        seen.append(("reload", u.reg_read(UC_ARM64_REG_X1)) if a == GAME_BASE + rl else ("own", 0))
+        if a == GAME_BASE + rl:
+            u.emu_stop()
+    h1 = uc.hook_add(UC_HOOK_CODE, at, begin=GAME_BASE + rl, end=GAME_BASE + rl)
+    h2 = uc.hook_add(UC_HOOK_CODE, at, begin=GAME_BASE + fn + 16, end=GAME_BASE + fn + 16)
+
+    def run(cp):
+        seen.clear()
+        uc.mem_write(GUEST + 0x1934B70, struct.pack("<h", 13))
+        uc.mem_write(GUEST + 0x1934B88, struct.pack("<h", cp))
+        uc.mem_write(GUEST + 0x1F8000, struct.pack("<I", 0x668227))
+        st = bytearray(0x1000)
+        struct.pack_into("<I", st, 0x908, 0x1F8000)
+        uc.mem_write(STATE, bytes(st))
+        run_function(uc, GAME_BASE + fn, STATE, 0x7F4700, 0, limit=100000)
+        return seen[0] if seen else None
+
+    check(run(0x5B) == ("reload", 0x716E00), "restart: before a checkpoint it goes the reload handler's way")
+    check(run(13) == ("own", 0), "restart: after a checkpoint it runs its own body")
+    uc.hook_del(h1)
+    uc.hook_del(h2)
+
+
 def layout_checks(game, patch, check):
     """Kind 3 (laid out at 16:9) around sub_86eac0, which calls the ret function sub_6fe430,
     itself traced (kind 4): inside, HorizontalResolution reads 1920 for a 2340x1080 screen and the
@@ -971,6 +1018,7 @@ def main():
     layout_checks(game, patch, check)
     fill_checks(game, patch, check)
     moves_checks(game, patch, check)
+    restart_checks(game, patch, check)
     print("ALL PASS" if ok else "SOME FAILED")
     return 0 if ok else 1
 

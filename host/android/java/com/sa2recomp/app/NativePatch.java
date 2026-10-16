@@ -120,6 +120,10 @@ final class NativePatch {
     /** With random on: anyone may turn up in a speed stage (the speed group draws from all twelve). */
     static final String RANDOM_ANY_PREF = "swap_random_any", RANDOM_ANY_KEY = "*any*";
     private static final int CHECKPOINT_RECORDS = 0x1934B88;
+    /** The game's restart handlers (cases of its GameState switch) keep the character object; the
+     * restart-with-reload one fades, tears the stage down and moves to GameState 5 (delete and load
+     * the characters again). With random on, a restart before any checkpoint goes that way. */
+    private static final int RESTART_A = 0x43BA75, RESTART_B = 0x43BAAF, RESTART_RELOAD = 0x43BB60;
     static final String[] GROUPS = {"speed", "hunt", "mech"};
     /** Characters: Amy and Metal Sonic get the Spin Dash (in swaps(), MOVES_KEY). Sonic's action code
      * starts one only for CharID2 Sonic or Shadow; two of its functions are wrapped (kind 11) so the
@@ -569,7 +573,7 @@ final class NativePatch {
             }
             needWrap = true;
             plan.said.add("1".equals(swaps.get(RANDOM_ANY_KEY))
-                          ? "Characters: a random character each stage (anyone in speed stages, the same play style elsewhere)"
+                          ? "Characters: a random character each stage (the walkers too in speed stages, the same play style elsewhere)"
                           : "Characters: a random character of the same play style each stage");
         }
         boolean moves = false;
@@ -613,9 +617,21 @@ final class NativePatch {
                         if (!c.group.equals(GROUPS[g]) || !lib.has(c.load) || redirects.containsKey(c.load)) continue;
                         long[] f = lib.fns.get(c.load);
                         b.append(String.format(Locale.ROOT, "Z %x %x\n", f[0], c.load));
-                        int member = g | (any && g != 0 ? 1 << 2 : 0);   // bit 2: also in the speed group
+                        // bit 2: also in the speed group (the walkers; hunters in a speed stage draw nothing)
+                        int member = g | (any && g == 2 ? 1 << 2 : 0);
                         b.append(String.format(Locale.ROOT, "W %x %x %x %x %s %s\n", f[0], f[1], 10, member,
                                                hex(lib.bytes(f[0], 16)), "random " + c.name));
+                        plan.patches++;
+                    }
+                }
+                long[] rl = lib.fns.get(RESTART_RELOAD);
+                if (rl != null && !redirects.containsKey(RESTART_RELOAD)) {
+                    b.append(String.format(Locale.ROOT, "Y %x %x\n", rl[0], RESTART_RELOAD));
+                    for (int va : new int[] {RESTART_A, RESTART_B}) {
+                        long[] f = lib.fns.get(va);
+                        if (f == null || redirects.containsKey(va)) continue;
+                        b.append(String.format(Locale.ROOT, "W %x %x %x %x %s %s\n", f[0], f[1], 12, 1,
+                                               hex(lib.bytes(f[0], 16)), String.format(Locale.ROOT, "restart %x picks again", va)));
                         plan.patches++;
                     }
                 }
