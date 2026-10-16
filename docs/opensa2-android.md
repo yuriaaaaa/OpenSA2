@@ -88,11 +88,10 @@ picked (1 for Knuckles and Rouge, 2 for the walkers). With that mod installed (o
 layouts, and the helper wraps the game's stage layout loader (LoadStageSETFile, 0x00488F60): as a
 speed stage's layout loads, the walkers' layout or the stage's usual one is copied over the file
 the game reads, for the character picked for it (`StageLayouts.java`, helper kind 13). A restart
-keeps the stage's layout, so it picks among the same kind. Knuckles and Rouge join the speed group too (the hunters'
+keeps the stage's layout, so it picks among the same kind. The hunters join the speed group too (the hunters'
 layout when the SA2 Randomizer is there; their emerald manager, LoadEmeraldManager 0x0073AA70, and
 level bounds, 0x00737B50, run only in the hunting stages, as Character Select Plus has it, helper
-kind 14); Tikal and Chaos drew a black screen in speed stages
-(0.1.8) and stay in their own. The Dark Chao Walker crashes as a story stage loads it (every time
+kind 14, which cured the black screen they gave there in 0.1.8). The Dark Chao Walker crashes as a story stage loads it (every time
 in 0.1.10 and 0.1.11, guest read at 0x6B6E617A, the walker-main wrapper notwithstanding), so random
 leaves it out. **The Chao Walkers** in story stages: the walker's main (0x00741530) takes paths by
 `CharObj2Base.CharID2` that only Tails's and Eggman's walkers have data for (the Dark Chao Walker

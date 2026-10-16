@@ -585,7 +585,7 @@ final class NativePatch {
             }
             needWrap = true;
             plan.said.add("1".equals(swaps.get(RANDOM_ANY_KEY))
-                          ? "Characters: a random character each stage (Knuckles, Rouge and the walkers too in speed stages, the same play style elsewhere)"
+                          ? "Characters: a random character each stage (the hunters and walkers too in speed stages, the same play style elsewhere)"
                           : "Characters: a random character of the same play style each stage");
         }
         boolean walkers = random;
@@ -629,9 +629,9 @@ final class NativePatch {
                         b.append(String.format(Locale.ROOT, "Z %x %x\n", f[0], c.load));
                         // The Dark Chao Walker crashes in stories (0.1.10 and 0.1.11 logs): left out.
                         if (c.key.equals("darkchaowalker")) continue;
-                        // bit 2: also in the speed group (Knuckles, Rouge and the walkers; Tikal and
-                        // Chaos drew a black screen there)
-                        boolean speedToo = any && (g == 2 || c.key.equals("knuckles") || c.key.equals("rouge"));
+                        // bit 2: also in the speed group (the hunters and the walkers; the hunters'
+                        // black screen there was their emerald manager and level bounds, gated below)
+                        boolean speedToo = any && g != 0;
                         int member = g | (speedToo ? 1 << 2 : 0);
                         b.append(String.format(Locale.ROOT, "W %x %x %x %x %s %s\n", f[0], f[1], 10, member,
                                                hex(lib.bytes(f[0], 16)), "random " + c.name));

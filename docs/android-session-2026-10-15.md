@@ -505,3 +505,9 @@ Sonikko's light blue; which texture or model that is was not found yet (asked fo
   random's speed stages take Knuckles and Rouge. Emulator-checked (pops the return address, EAX 0
   in City Escape; the body runs in Pumpkin Hill). Whether these were the black screen's cause is
   not proven yet.
+
+# Fourteenth session (2026-10-16): 0.1.14
+
+- On the phone (0.1.13): Knuckles and Rouge play City Escape with the level gates (the black
+  screen is gone). Tikal and Chaos, which gave the same black screen in 0.1.8, are back in the
+  speed group (every hunter and walker member but the Dark Chao Walker carries bit 2).

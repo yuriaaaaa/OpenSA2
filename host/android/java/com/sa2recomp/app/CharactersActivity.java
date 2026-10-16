@@ -39,7 +39,7 @@ public class CharactersActivity extends Activity {
                     p.edit().putBoolean(NativePatch.RANDOM_PREF, on).apply();
                     show();
                 }));
-        col.addView(Ui.check(this, "With random: Knuckles, Rouge and the walkers can turn up in speed stages too (very experimental; "
+        col.addView(Ui.check(this, "With random: the treasure hunters and the walkers can turn up in speed stages too (very experimental; "
                 + "install the SA2 Randomizer mod, on or off, for stage layouts they can finish)",
                 p.getBoolean(NativePatch.RANDOM_ANY_PREF, false),
                 on -> p.edit().putBoolean(NativePatch.RANDOM_ANY_PREF, on).apply()));
