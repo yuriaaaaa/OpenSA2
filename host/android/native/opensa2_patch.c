@@ -390,13 +390,20 @@ static int g_nq;
  * game's model file and texture list names, the super model's index; F line: LoadMDLFile and
  * LoadCharTextures). */
 #define MAX_SUPER 2
-static uint32_t g_x_id[MAX_SUPER], g_x_mdl[MAX_SUPER], g_x_tex[MAX_SUPER], g_x_idx[MAX_SUPER];
+static uint32_t g_x_id[MAX_SUPER], g_x_mdl[MAX_SUPER], g_x_tex[MAX_SUPER], g_x_idx[MAX_SUPER], g_x_phys[MAX_SUPER];
 static int g_nx;
 static uint64_t g_mdlfn_off, g_texfn_off;
 static uint32_t g_mdlfn_va, g_texfn_va;
+/* B line: transform as Sora's SA2 Super Sonic does (a button pressed in a jump with at least so
+ * many rings; a ring a second after; back at none, or on the button again). No B line: the super
+ * form from the first frame, for good. */
+static uint32_t g_t_button, g_t_rings;
+/* Per player: the character object the super model and textures were loaded for (g_sp_co2), the
+ * super texture list, the one it replaced, the model index; whether the form is on, the animation
+ * list changed and the body model it had, and the physics it had. */
 static uint32_t g_sp_co2[2], g_sp_tex[2], g_sp_old[2], g_sp_idx[2], g_sp_failed[2];
-static uint32_t g_sp_lists[8];
-static int g_sp_nlists;
+static uint32_t g_sp_on[2], g_sp_list[2], g_sp_best[2];
+static uint8_t g_sp_phys[2][0x84];
 static uint8_t g_callsave[0x400];
 /* Kind 11: CharObj2Base.CharID2 values read as another for the length of a call (M lines). */
 #define MAX_MOVES 8
@@ -538,7 +545,13 @@ static void parse_plan(const char *p) {
                 g_x_mdl[g_nx] = (uint32_t)b;
                 g_x_tex[g_nx] = (uint32_t)c;
                 g_x_idx[g_nx] = (uint32_t)d;
+                g_x_phys[g_nx] = parse_hex(&s, &a) ? (uint32_t)a : 0xFFFFFFFFu;
                 g_nx++;
+            }
+        } else if (t == 'B') {
+            if (parse_hex(&s, &a) && parse_hex(&s, &b)) {
+                g_t_button = (uint32_t)a;
+                g_t_rings = (uint32_t)b;
             }
         } else if (t == 'F') {
             if (parse_hex(&s, &a) && parse_hex(&s, &b) && parse_hex(&s, &c) && parse_hex(&s, &d)) {
@@ -1340,13 +1353,27 @@ static uint32_t guest_call(void *state, void *memory, uint64_t off, uint32_t va,
     return r;
 }
 
-/* Kind 18, around Sonic_Main (Sonic's and Shadow's): the first time a player whose CharID2 is an X
- * line's runs in a stage (not Final Hazard, H set 1), it becomes its super form as Sora's SA2 Super
- * Sonic does it on transforming: the game's super model (LoadMDLFile of SSONICMDL.PRS, index 328;
- * SSHADOWMDL.PRS, 355) put in CharacterModels, the super texture list (LoadCharTextures) as the
- * player's (SonicCharObj2 +0x394, the old one kept for the ball), and the animation list's body
- * model (the commonest ModelNum) changed to the super model, so Sonic's own motions drive it. */
-static void super_apply(void *state, void *memory, uint8_t *g, int p, uint32_t co2, int k) {
+/* Kind 18, around Sonic_Main (Sonic's and Shadow's): Sonic and Shadow (the X lines' CharID2) become
+ * their super forms as Sora's SA2 Super Sonic does it on transforming, outside Final Hazard (H set
+ * 1): the game's super model (LoadMDLFile of SSONICMDL.PRS, index 328; SSHADOWMDL.PRS, 355) put in
+ * CharacterModels, the super texture list (LoadCharTextures) as the player's (SonicCharObj2 +0x394,
+ * the old one kept for the ball), the animation list's body model (the commonest ModelNum) changed
+ * to the super model so their own motions drive it, the super physics (PhysicsArray) and
+ * invincibility. With a B line they transform when the button is pressed in a jump with enough
+ * rings, lose a ring a second and turn back at none (or on the button in a jump again); without
+ * one they are the super form from their first frame. */
+#define SP_RINGS 0x174B028u
+#define SP_FRAMES 0x174B03Cu
+#define SP_TIMER_STOPPED 0x174AFDAu
+#define SP_GAMESTATE 0x1934BE0u
+#define SP_CONTROLLERS 0x1DEFC00u
+#define SP_CHAROBJ1 0x1DEA6C0u
+#define SP_MODELS 0x1DE9620u
+#define SP_PHYSICS 0x17391E8u
+#define SP_INVINCIBLE 0x8000u
+
+/* Loads the super model and textures for player p's character object; 0 when they did not load. */
+static int super_load(void *state, void *memory, uint8_t *g, int p, uint32_t co2, int k) {
     uint32_t lst = guest_call(state, memory, g_mdlfn_off, g_mdlfn_va, g_x_mdl[k], 0);
     uint32_t model = 0, idx = g_x_idx[k];
     if (lst && g_ok(lst, 8)) {
@@ -1359,7 +1386,7 @@ static void super_apply(void *state, void *memory, uint8_t *g, int p, uint32_t c
             }
         }
     }
-    uint32_t cm = 0x1DE9620 + 8 * idx;
+    uint32_t cm = SP_MODELS + 8 * idx;
     if (!model || !g_ok(cm, 8)) {
         g_sp_failed[p] = co2;
         begin();
@@ -1367,7 +1394,7 @@ static void super_apply(void *state, void *memory, uint8_t *g, int p, uint32_t c
         put_dec(idx);
         put(" from the game's file; left as it is");
         end();
-        return;
+        return 0;
     }
     g_wr32(g, cm, idx);
     g_wr32(g, cm + 4, model);
@@ -1375,17 +1402,40 @@ static void super_apply(void *state, void *memory, uint8_t *g, int p, uint32_t c
     if (!tex || !g_ok(co2 + 0x398, 4)) {
         g_sp_failed[p] = co2;
         say("super: the super texture list did not load; left as it is");
-        return;
+        return 0;
     }
-    g_sp_old[p] = g_rd32(g, co2 + 0x394);
-    g_wr32(g, co2 + 0x394, tex);
     g_sp_tex[p] = tex;
     g_sp_co2[p] = co2;
     g_sp_idx[p] = idx;
-    uint32_t list = g_rd32(g, co2 + 0x198);
-    int done = 0;
-    for (int i = 0; i < g_sp_nlists; i++) done |= g_sp_lists[i] == list;
-    if (!done && list && g_ok(list, 16 * 203)) {
+    begin();
+    put("super: player ");
+    put_dec((uint64_t)p);
+    put(" has the super model ");
+    put_dec(idx);
+    put(" and textures ");
+    put_hex(tex);
+    end();
+    return 1;
+}
+
+/* Puts every ModelNum `from` of an animation list (203 entries of 16 bytes) to `to`. */
+static void super_list_set(uint8_t *g, uint32_t list, uint32_t from, uint32_t to) {
+    if (!list || !g_ok(list, 16 * 203)) return;
+    for (int i = 0; i < 203; i++) {
+        uint32_t a = list + 16 * (uint32_t)i + 2;
+        if (g_rd16(g, a) == from) {
+            g[a] = (uint8_t)to;
+            g[a + 1] = (uint8_t)(to >> 8);
+        }
+    }
+}
+
+static void super_on(uint8_t *g, int p, uint32_t co2, int k) {
+    g_sp_old[p] = g_rd32(g, co2 + 0x394);
+    g_wr32(g, co2 + 0x394, g_sp_tex[p]);
+    uint32_t list = g_rd32(g, co2 + 0x198), idx = g_sp_idx[p];
+    g_sp_list[p] = 0;
+    if (list && g_ok(list, 16 * 203)) {
         /* the body's model: the commonest ModelNum among the list's entries */
         uint32_t best = 0, bestn = 0;
         for (int i = 0; i < 203; i++) {
@@ -1396,34 +1446,42 @@ static void super_apply(void *state, void *memory, uint8_t *g, int p, uint32_t c
                 best = m;
             }
         }
-        for (int i = 0; i < 203; i++) {
-            uint32_t a = list + 16 * (uint32_t)i + 2;
-            if (g_rd16(g, a) == best) {
-                g[a] = (uint8_t)idx;
-                g[a + 1] = (uint8_t)(idx >> 8);
-            }
+        if (best != idx) {
+            super_list_set(g, list, best, idx);
+            g_sp_list[p] = list;
+            g_sp_best[p] = best;
         }
-        if (g_sp_nlists < 8) g_sp_lists[g_sp_nlists++] = list;
-        begin();
-        put("super: animation list ");
-        put_hex(list);
-        put(": body model ");
-        put_dec(best);
-        put(" -> ");
-        put_dec(idx);
-        put(" in ");
-        put_dec(bestn);
-        put(" entries");
-        end();
     }
+    if (g_ok(co2 + 0xC0, 0x84)) {
+        for (int i = 0; i < 0x84; i++) g_sp_phys[p][i] = g[co2 + 0xC0 + (uint32_t)i];
+        uint32_t ph = g_x_phys[k] < 32 ? SP_PHYSICS + 0x84 * g_x_phys[k] : 0;
+        if (ph && g_ok(ph, 0x84))
+            for (int i = 0; i < 0x84; i++) g[co2 + 0xC0 + (uint32_t)i] = g[ph + (uint32_t)i];
+    }
+    if (g_ok(co2 + 0x10, 2)) g[co2 + 0x11] |= (uint8_t)(SP_INVINCIBLE >> 8);
+    g_sp_on[p] = 1;
     begin();
     put("super: player ");
     put_dec((uint64_t)p);
-    put(" is the super form (model ");
-    put_dec(idx);
-    put(", textures ");
-    put_hex(tex);
-    put(")");
+    put(" is the super form");
+    end();
+}
+
+/* Back from the super form; `gone` when the character object is no more (only the shared
+ * animation list is put back). */
+static void super_off(uint8_t *g, int p, uint32_t co2, int gone) {
+    if (g_sp_list[p]) super_list_set(g, g_sp_list[p], g_sp_idx[p], g_sp_best[p]);
+    g_sp_list[p] = 0;
+    g_sp_on[p] = 0;
+    if (gone || !co2 || !g_ok(co2 + 0x398, 4)) return;
+    if (g_rd32(g, co2 + 0x394) == g_sp_tex[p] && g_sp_old[p]) g_wr32(g, co2 + 0x394, g_sp_old[p]);
+    if (g_ok(co2 + 0xC0, 0x84))
+        for (int i = 0; i < 0x84; i++) g[co2 + 0xC0 + (uint32_t)i] = g_sp_phys[p][i];
+    if (g_ok(co2 + 0x10, 2)) g[co2 + 0x11] &= (uint8_t)~(SP_INVINCIBLE >> 8);
+    begin();
+    put("super: player ");
+    put_dec((uint64_t)p);
+    put(" is back from the super form");
     end();
 }
 
@@ -1437,14 +1495,55 @@ static void *wrap_supermain(wrap_t *w, void *state, uint32_t pc, void *memory) {
             if (!g_ok(g_co2_va + 4 * p, 4)) continue;
             uint32_t co2 = g_rd32(g, g_co2_va + 4 * p);
             if (!co2 || !g_ok(co2 + 0x398, 4)) continue;
-            if (g_sp_co2[p] == co2 && g_rd32(g, co2 + 0x394) == g_sp_tex[p]) continue;   /* done */
+            if (g_sp_co2[p] && g_sp_co2[p] != co2) {
+                /* a new character object (a new stage, a restart): what was loaded was for the old */
+                if (g_sp_on[p]) super_off(g, p, g_sp_co2[p], 1);
+                g_sp_co2[p] = 0;
+            }
             if (g_sp_failed[p] == co2) continue;
             uint32_t id2 = g[co2 + g_charid_off + 2];
-            for (int k = 0; k < g_nx; k++)
-                if (g_x_id[k] == id2 && g_rd32(g, co2 + 0x394)) {
-                    super_apply(state, memory, g, p, co2, k);
-                    break;
+            int k = -1;
+            for (int i = 0; i < g_nx; i++)
+                if (g_x_id[i] == id2) k = i;
+            if (k < 0 || !g_rd32(g, co2 + 0x394)) continue;
+            if (!g_t_button) {
+                if (g_sp_on[p] && g_rd32(g, co2 + 0x394) == g_sp_tex[p]) continue;   /* done */
+                if (g_sp_on[p]) super_off(g, p, co2, 1);   /* the textures were changed: again */
+                if (!g_sp_co2[p] && !super_load(state, memory, g, p, co2, k)) continue;
+                super_on(g, p, co2, k);
+                continue;
+            }
+            /* transforming */
+            if (!g_ok(SP_GAMESTATE, 2) || g_rd16(g, SP_GAMESTATE) != 16) continue;   /* in game */
+            uint32_t d1 = g_ok(SP_CHAROBJ1 + 4 * (uint32_t)p, 4) ? g_rd32(g, SP_CHAROBJ1 + 4 * (uint32_t)p) : 0;
+            uint32_t pad = SP_CONTROLLERS + 0x34 * (uint32_t)p;
+            if (!d1 || !g_ok(d1, 8) || !g_ok(pad, 0x34) || !g_ok(SP_RINGS + 2 * (uint32_t)p, 2)) continue;
+            uint32_t action = g[d1], press = g_rd32(g, pad + 0x10);
+            int16_t rings = (int16_t)g_rd16(g, SP_RINGS + 2 * (uint32_t)p);
+            int jumping = action == 6 || action == 13;   /* Action_Jump, Action_HomingAttack */
+            if (!g_sp_on[p]) {
+                if (rings >= (int)g_t_rings && action == 6 && (press & g_t_button)) {
+                    if (!g_sp_co2[p] && !super_load(state, memory, g, p, co2, k)) continue;
+                    super_on(g, p, co2, k);
                 }
+                continue;
+            }
+            if (g_rd32(g, co2 + 0x394) != g_sp_tex[p] && g_rd32(g, co2 + 0x394) != g_sp_old[p]) {
+                super_off(g, p, co2, 1);   /* someone else changed the textures: let go */
+                continue;
+            }
+            if (jumping && (press & g_t_button)) {
+                super_off(g, p, co2, 0);
+                continue;
+            }
+            uint32_t frames = g_ok(SP_FRAMES, 4) ? g_rd32(g, SP_FRAMES) : 1;
+            int stopped = g_ok(SP_TIMER_STOPPED, 1) ? g[SP_TIMER_STOPPED] : 0;
+            if (!stopped && frames % 60 == 0 && rings > 0) {
+                rings--;
+                g[SP_RINGS + 2 * (uint32_t)p] = (uint8_t)rings;
+                g[SP_RINGS + 2 * (uint32_t)p + 1] = (uint8_t)((uint16_t)rings >> 8);
+            }
+            if (rings <= 0) super_off(g, p, co2, 0);
         }
     }
     return w->orig(state, pc, memory);

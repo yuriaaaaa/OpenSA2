@@ -120,7 +120,8 @@ final class NativePatch {
     /** Characters: a random character of the same play style each stage (in swaps(), RANDOM_KEY). */
     static final String RANDOM_PREF = "swap_random", RANDOM_KEY = "*random*";
     /** With random on: anyone may turn up in a speed stage (the speed group draws from all twelve). */
-    static final String RANDOM_ANY_PREF = "swap_random_any", RANDOM_ANY_KEY = "*any*", MOVES_KEY = "*moves*", SUPER_KEY = "*super*";
+    static final String RANDOM_ANY_PREF = "swap_random_any", RANDOM_ANY_KEY = "*any*", MOVES_KEY = "*moves*", SUPER_KEY = "*super*",
+            TRANSFORM_KEY = "*transform*";
     private static final int CHECKPOINT_RECORDS = 0x1934B88;
     /** The game's restart handlers (cases of its GameState switch) keep the character object; the
      * restart-with-reload one fades, tears the stage down and moves to GameState 5 (delete and load
@@ -137,10 +138,15 @@ final class NativePatch {
      * textures are loaded and put in place and their animation list's body model becomes the super
      * model; Sonic_Display (kind 19) draws the ball with the old textures. */
     static final String SUPER_PREF = "super_forms";
+    /** Sonic and Shadow transform as in Sora's SA2 Super Sonic: Y in a jump with 50 rings or more
+     * (the B line), a ring a second after, themselves again at none or on Y in a jump again. A
+     * mod's SSONICMDL/SSONICTEX (Chaos Nazo) is the super form they take. */
+    static final String TRANSFORM_PREF = "super_transform";
+    private static final int BUTTON_Y = 0x200, TRANSFORM_RINGS = 50;
     private static final int SONIC_MAIN = 0x717840, SONIC_DISPLAY = 0x720090, LOAD_MDL_FILE = 0x459590,
             LOAD_CHAR_TEXTURES = 0x44C510;
-    private static final int[][] SUPER_FORMS = {   // CharID2, model file name, texture list name, model index
-            {0, 0x8BA9FC, 0x8BA9F0, 328}, {1, 0x8BAA3C, 0x8BAA30, 355}};
+    private static final int[][] SUPER_FORMS = {   // CharID2, model file name, texture list name, model index,
+            {0, 0x8BA9FC, 0x8BA9F0, 328, 9}, {1, 0x8BAA3C, 0x8BAA30, 355, 10}};   // and their physics
     private static final int FINAL_HAZARD = 0x42, LAST_BOSS_PLAYER_MANAGER = 0x49ECE0, EXEC_LOAD = 0x6EDEE0, P_RESET_POS = 0x469050;
     private static final int[] HUNTING_LEVELS = {5, 7, 8, 16, 18, 25, 26, 32, 41, 44, 46, 49, 50, 59};
     static final String[] GROUPS = {"speed", "hunt", "mech"};
@@ -189,6 +195,7 @@ final class NativePatch {
         if (p.getBoolean(RANDOM_PREF, false) && p.getBoolean(RANDOM_ANY_PREF, false)) out.put(RANDOM_ANY_KEY, "1");
         if (p.getBoolean(MOVES_PREF, true)) out.put(MOVES_KEY, "1");
         if (p.getBoolean(SUPER_PREF, false)) out.put(SUPER_KEY, "1");
+        else if (p.getBoolean(TRANSFORM_PREF, true)) out.put(TRANSFORM_KEY, "1");
         return out;
     }
 
@@ -636,7 +643,8 @@ final class NativePatch {
             if (to.key.startsWith("super")) supers = true;
         }
         moves = moves && "1".equals(swaps.get(MOVES_KEY));
-        boolean superForms = "1".equals(swaps.get(SUPER_KEY));
+        boolean transform = "1".equals(swaps.get(TRANSFORM_KEY)) && !"1".equals(swaps.get(SUPER_KEY));
+        boolean superForms = "1".equals(swaps.get(SUPER_KEY)) || transform;
         for (Map.Entry<String, String> e : swaps.entrySet()) {
             if (random) break;
             if (e.getKey().startsWith("*")) continue;
@@ -712,13 +720,15 @@ final class NativePatch {
                 && !redirects.containsKey(SONIC_MAIN) && !redirects.containsKey(SONIC_DISPLAY)) {
                 b.append(String.format(Locale.ROOT, "H %x 1\n", FINAL_HAZARD));
                 b.append(String.format(Locale.ROOT, "F %x %x %x %x\n", mdlf[0], LOAD_MDL_FILE, texf[0], LOAD_CHAR_TEXTURES));
-                for (int[] x : SUPER_FORMS) b.append(String.format(Locale.ROOT, "X %x %x %x %x\n", x[0], x[1], x[2], x[3]));
+                for (int[] x : SUPER_FORMS) b.append(String.format(Locale.ROOT, "X %x %x %x %x %x\n", x[0], x[1], x[2], x[3], x[4]));
+                if (transform) b.append(String.format(Locale.ROOT, "B %x %x\n", BUTTON_Y, TRANSFORM_RINGS));
                 b.append(String.format(Locale.ROOT, "W %x %x %x %x %s %s\n", smain[0], smain[1], 18, 0,
                                        hex(lib.bytes(smain[0], 16)), "Sonic and Shadow as their super forms"));
                 b.append(String.format(Locale.ROOT, "W %x %x %x %x %s %s\n", sdisp[0], sdisp[1], 19, 0,
                                        hex(lib.bytes(sdisp[0], 16)), "super forms' ball drawn with the old textures"));
                 plan.patches += 2;
-                plan.said.add("Characters: Sonic and Shadow are their super forms in every stage (test)");
+                plan.said.add(transform ? "Characters: Sonic and Shadow transform with Y in a jump and 50 rings"
+                                        : "Characters: Sonic and Shadow are their super forms in every stage (test)");
             }
             if ((huntersOut || supers) && retf != null) b.append(String.format(Locale.ROOT, "J %x %x\n", retf[0], retVa));
             if (supers && retf != null) {

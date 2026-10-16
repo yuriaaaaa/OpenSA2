@@ -574,3 +574,21 @@ Sonikko's light blue; which texture or model that is was not found yet (asked fo
   strings are the game's own (.rdata 0x8BA9F0..0x8BAA4C). The animation list (static, per
   character) is changed in place once. Emulator-checked with the bare `ret` standing in for the
   game's loaders (it hands EAX back). Super Sonic and Super Shadow stay out of random.
+- 0.1.18 on the phone: Super Sonic on City Escape with Sonic's moves ("Super form works").
+
+# Nineteenth session (2026-10-17): 0.1.19
+
+- The user asked for their own super mod: transform at 50 rings, with Nazo as a green "Chaos
+  Nazo". Kind 18 now transforms (plan line `B <button> <rings>`): Y in a jump with 50 rings,
+  super physics (X lines' fifth field, the PhysicsArray index 9/10) and invincibility, a ring a
+  second, back at none or on Y in a jump; everything it changed (textures, the shared animation
+  list's body model, physics, the Powerups bit) is put back. Without a B line ("Always super") it
+  is the 0.1.18 behaviour. Emulator-checked (no button, too few rings, transform, drain, back,
+  again, back on the button).
+- Chaos Nazo add-on (delivered, not committed): `gd_PC/ssonicmdl/` with Nazo's 0.sa2mdl as index
+  328 (the game's ssonicmdl.prs fills 329-352) and `PRS/ssonictex.pak`, Nazo's sonictex with the
+  blue hues (185-265 degrees) turned emerald green and the inner names and GBIX numbers changed
+  (Sora notes the GBIX texture cache: shared numbers would give back the loaded blue textures).
+- Not done: the aura (Sora's draws its own models with ss_efftex in a task of its own), music,
+  flight, the transformation animation.
+

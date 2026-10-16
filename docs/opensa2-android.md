@@ -86,17 +86,25 @@ outside Final Hazard their loaders' LastBossPlayerManager_Load (0x0049ECE0) and 
 plays (helper kind 17, by CharID or CharID2 9 and 10), as the SA2 Randomizer patches them (it also changes a few instructions inside
 Super_DispDelay3 and CheckBreakObject, which this port cannot).
 
-**Super Sonic and Super Shadow in every stage** (Characters, a test, off by default), after
-Sora's SA2 Super Sonic (a DLL mod: it keeps Sonic and, on transforming, swaps in the super model,
-textures, motions and physics). The helper does the core of it natively: on Sonic's or Shadow's
-first frame in a stage (Sonic_Main, 0x00717840, kind 18) it calls the game's LoadMDLFile
-(0x00459590) on SSONICMDL.PRS or SSHADOWMDL.PRS and puts model 328 or 355 in CharacterModels,
-calls LoadCharTextures (0x0044C510) on SSONICTEX or SSHADOWTEX for the player's texture list
-(SonicCharObj2 +0x394), and changes the animation list's body model (the commonest ModelNum) to
-the super model, so their own motions drive it; Sonic_Display (0x00720090, kind 19) draws the
-ball, which has no super model, with the old textures. No transforming, ring drain, aura, music or
-physics yet. The helper calls the game's functions on the wrapped call's State (`guest_call`:
-EAX/ECX set, a return address pushed, the registers put back).
+**Super transformation** (Characters, on by default), after Sora's SA2 Super Sonic (a DLL mod:
+it keeps Sonic and, on transforming, swaps in the super model, textures, motions and physics).
+The helper does the core of it natively, around Sonic_Main (0x00717840, kind 18): with 50 rings
+or more, Y (Buttons_Y, 0x200, from Controllers at 0x01DEFC00 +0x10 press) in a jump (Action 6)
+makes Sonic or Shadow the super form: the game's LoadMDLFile (0x00459590) on SSONICMDL.PRS or
+SSHADOWMDL.PRS puts model 328 or 355 in CharacterModels, LoadCharTextures (0x0044C510) on SSONICTEX
+or SSHADOWTEX gives the player's texture list (SonicCharObj2 +0x394), the animation list's body
+model (the commonest ModelNum) becomes the super model so their own motions drive it, the physics
+(CharObj2Base +0xC0) become PhysicsArray's Super Sonic or Super Shadow entry, and the
+invincibility bit (Powerups 0x8000) is set. A ring a second goes (RingCount 0x0174B028, on
+FrameCountIngame % 60 unless TimerStopped); at none, or on Y in a jump again, all of it is put
+back. Loaded once per character object; a new one (a new stage, a restart) puts the shared
+animation list back. Not in Final Hazard (H set 1). Sonic_Display (0x00720090, kind 19) draws the
+ball, which has no super model, with the old textures. **Always super** (off) makes them the super
+form from their first frame instead. No aura, music, flight or intro animation. A mod's
+`ssonicmdl/` folder and `ssonictex.pak` give another super look (the Chaos Nazo add-on: Nazo's
+body as index 328 and his textures recoloured green, with their own GBIX numbers so the texture
+cache does not hand back Nazo's blue ones). The helper calls the game's functions on the wrapped
+call's State (`guest_call`: EAX/ECX set, a return address pushed, the registers put back).
 
 **Amy's and Metal Sonic's Spin Dash** (Characters, on by default) follows MainMemory's
 SA2-Amy-Metal-SpinDash: Sonic's spin dash check (0x00723DD5, where that mod nops a CharID2 test)

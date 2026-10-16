@@ -793,57 +793,94 @@ def super_checks(game, patch, check):
     """Kinds 18 and 19 with the ret function standing in for LoadMDLFile and LoadCharTextures (it
     hands EAX back, so the model file name's address is read as the model list and the texture
     list name's as the texture list): around the ret function sub_7f4700 standing in for Sonic_Main,
-    Sonic (CharID2 0) gets model 328 in CharacterModels, the texture list, and his animation list's
-    commonest model changed to 328; the caller's registers are as before; around it standing in for
-    Sonic_Display, a ball animation draws with the old texture list and the super one is back after."""
+    Sonic (CharID2 0) gets model 328 in CharacterModels, the texture list, his animation list's
+    commonest model changed to 328, the super physics and invincibility; the caller's registers are
+    as before. With a B line he does so only with the button pressed in a jump with 50 rings, loses
+    a ring a second, and is himself again (textures, animation list, physics) at none."""
     sym = game.syms
     fb, _ = sym["sa2_guest_fast_base"]
     fn, fsize = sym["sub_7f4700"]
     rt, _ = sym["sub_6fe430"]
     f16 = game.b[game.vaddr_to_off(fn):game.vaddr_to_off(fn) + 16].hex()
-    for kind in (0x12, 0x13):
+    for tline in ("", "B 200 32"):
         plan = "\n".join(["opensa2-patch 1", f"G {fb:x} 20000000", "C 1934b70 1de9600 1 5b", "H 42 1",
-                          "X 0 1100000 1100100 148", f"F {rt:x} 6fe430 {rt:x} 6fe430",
-                          f"W {fn:x} {fsize:x} 12 0 {f16} supermain"]) + "\n"
+                          "X 0 1100000 1100100 148 9", f"F {rt:x} 6fe430 {rt:x} 6fe430"] + ([tline] if tline else [])
+                         + [f"W {fn:x} {fsize:x} 12 0 {f16} supermain"]) + "\n"
         uc, sc = boot(game, patch, plan.encode())
         check("1 of 1 patch(es) applied" in sc.err.decode(), "super: the main wrapper applied")
         gb = guest_base_var(uc, game)
         uc.mem_write(gb, struct.pack("<Q", GUEST))
-        for a in (0x1934000, 0x1DE9000, 0x1DEA000, 0x1000000, 0x1100000, 0x1200000, 0x1F0000):
+        for a in (0x1934000, 0x1DE9000, 0x1000000, 0x1100000, 0x1200000, 0x1F0000, 0x1730000, 0x1740000):
             try:
                 uc.mem_map(GUEST + a, 0x10000, UC_PROT_READ | UC_PROT_WRITE)
             except UcError:
                 pass
         uc.mem_write(GUEST + 0x1934B70, struct.pack("<h", 13))
+        uc.mem_write(GUEST + 0x1934BE0, struct.pack("<h", 16))
         uc.mem_write(GUEST + 0x1DE9600, struct.pack("<II", 0x1000000, 0))
+        uc.mem_write(GUEST + 0x1DEA6C0, struct.pack("<II", 0x1003000, 0))
+        uc.mem_write(GUEST + 0x17391E8 + 0x84 * 9, bytes([0x5A]) * 0x84)
         co2 = bytearray(0x400)
         co2[1], co2[3] = 0, 0
+        co2[0xC0:0xC0 + 0x84] = bytes([0x11]) * 0x84
         struct.pack_into("<I", co2, 0x198, 0x1200000)
         struct.pack_into("<I", co2, 0x394, 0xAAAA0000)
         uc.mem_write(GUEST + 0x1000000, bytes(co2))
+        uc.mem_write(GUEST + 0x1003000, bytes([6]) + bytes(15))
         uc.mem_write(GUEST + 0x1100000, struct.pack("<iI", 5, 0x1234) + struct.pack("<iI", 328, 0x5678) + struct.pack("<iI", -1, 0))
         lst = bytearray(16 * 203)
         for i in range(203):
             struct.pack_into("<hh", lst, 16 * i, i, 6 if i == 30 else 0)
         uc.mem_write(GUEST + 0x1200000, bytes(lst))
-        uc.mem_write(GUEST + 0x1F8000, struct.pack("<I", 0x401234))
-        st = bytearray(0x1000)
-        struct.pack_into("<I", st, 0x908, 0x1F8000)
-        struct.pack_into("<I", st, 0x8A8, 0x77)
-        struct.pack_into("<I", st, 0x8C8, 0x88)
-        uc.mem_write(STATE, bytes(st))
-        run_function(uc, GAME_BASE + fn, STATE, 0x7F4700, 0, limit=400000)
-        s2 = bytes(uc.mem_read(STATE, 0x1000))
-        cm = struct.unpack("<II", bytes(uc.mem_read(GUEST + 0x1DE9620 + 8 * 328, 8)))
-        tex = u32(bytes(uc.mem_read(GUEST + 0x1000394, 4)), 0)
-        l2 = bytes(uc.mem_read(GUEST + 0x1200000, 16 * 203))
-        models = [struct.unpack_from("<h", l2, 16 * i + 2)[0] for i in range(203)]
-        check(cm == (328, 0x5678), f"super: model 328 put in CharacterModels ({cm})")
-        check(tex == 0x1100100, f"super: the super texture list is the player's ({hex(tex)})")
-        check(models.count(328) == 202 and models[30] == 6, "super: the body's animations use model 328, the ball keeps its own")
-        check((u32(s2, 0x908), u32(s2, 0x9A8)) == (0x1F8004, 0x401234), "super: the wrapped function returned normally")
-        print("   ", [l for l in sc.err.decode().splitlines() if "super:" in l][:3])
-        break
+
+        def frame(rings, press, frames=1):
+            uc.mem_write(GUEST + 0x174B028, struct.pack("<h", rings))
+            uc.mem_write(GUEST + 0x174B03C, struct.pack("<I", frames))
+            uc.mem_write(GUEST + 0x1DEFC10, struct.pack("<I", press))
+            uc.mem_write(GUEST + 0x1F8000, struct.pack("<I", 0x401234))
+            st = bytearray(0x1000)
+            struct.pack_into("<I", st, 0x908, 0x1F8000)
+            struct.pack_into("<I", st, 0x8A8, 0x77)
+            struct.pack_into("<I", st, 0x8C8, 0x88)
+            uc.mem_write(STATE, bytes(st))
+            run_function(uc, GAME_BASE + fn, STATE, 0x7F4700, 0, limit=400000)
+            s2 = bytes(uc.mem_read(STATE, 0x1000))
+            check((u32(s2, 0x908), u32(s2, 0x9A8)) == (0x1F8004, 0x401234), "super: the wrapped function returned normally")
+            tex = u32(bytes(uc.mem_read(GUEST + 0x1000394, 4)), 0)
+            l2 = bytes(uc.mem_read(GUEST + 0x1200000, 16 * 203))
+            models = [struct.unpack_from("<h", l2, 16 * i + 2)[0] for i in range(203)]
+            phys = bytes(uc.mem_read(GUEST + 0x10000C0, 0x84))
+            pw = struct.unpack("<H", bytes(uc.mem_read(GUEST + 0x1000010, 2)))[0]
+            r = struct.unpack("<h", bytes(uc.mem_read(GUEST + 0x174B028, 2)))[0]
+            return tex, models, phys, pw, r
+
+        def is_super(t):
+            tex, models, phys, pw, _ = t
+            return (tex == 0x1100100 and models.count(328) == 202 and models[30] == 6
+                    and phys == bytes([0x5A]) * 0x84 and pw & 0x8000)
+
+        def is_self(t):
+            tex, models, phys, pw, _ = t
+            if not (tex == 0xAAAA0000 and models.count(0) == 202 and phys == bytes([0x11]) * 0x84 and not pw & 0x8000):
+                print("    is", hex(tex), models.count(0), models.count(328), phys[:4].hex(), hex(pw), t[4])
+            return tex == 0xAAAA0000 and models.count(0) == 202 and phys == bytes([0x11]) * 0x84 and not pw & 0x8000
+
+        if not tline:
+            t = frame(0, 0)
+            cm = struct.unpack("<II", bytes(uc.mem_read(GUEST + 0x1DE9620 + 8 * 328, 8)))
+            check(cm == (328, 0x5678), f"super: model 328 put in CharacterModels ({cm})")
+            check(is_super(t), "super (always): textures, body model 328 (the ball keeps its own), physics, invincibility")
+        else:
+            check(is_self(frame(60, 0)), "super (transform): nothing without the button")
+            check(is_self(frame(40, 0x200)), "super (transform): nothing with 40 rings")
+            t = frame(60, 0x200, 7)
+            check(is_super(t) and t[4] == 60, "super (transform): the button in a jump with 60 rings transforms")
+            t = frame(60, 0, 120)
+            check(is_super(t) and t[4] == 59, f"super (transform): a ring a second ({t[4]})")
+            check(is_self(frame(1, 0, 180)), "super (transform): himself again at no rings")
+            check(is_super(frame(55, 0x200, 7)), "super (transform): again")
+            check(is_self(frame(55, 0x200, 8)), "super (transform): the button in a jump turns back")
+        print("   ", [l for l in sc.err.decode().splitlines() if "super:" in l][:4])
 
 
 def layout_checks(game, patch, check):
