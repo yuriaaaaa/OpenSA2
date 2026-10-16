@@ -79,17 +79,20 @@ character is loaded (the choices are set aside while it is on). The game's resta
 restart or a death would keep the pick; with random on, both are sent down the game's own
 restart-with-reload handler (0x0043BB60: fade, tear down, GameState 5, which deletes and loads the
 characters again) unless a checkpoint was touched in the stage (CheckpointRecords, 0x01934B88),
-so before a checkpoint a restart or a death picks again. **Walkers in speed stages** puts Tails,
-Eggman and the Chao Walkers in the speed group too; a stand-in with no start or end position for
+so before a checkpoint a restart or a death picks again. **Walkers in speed stages** puts Tails's,
+Eggman's and the Chao Walker in the speed group too; a stand-in with no start or end position for
 the stage takes that of a character who has one. A walker cannot get past a speed stage's dash
 panels and loops; the SA2 Randomizer mod (GameBanana 48932) has, in its Options folder, each
 stage's object layout per kind of character, and its DLL copies the one for the character it
-picked (2 for the walkers). With that mod installed (on or off), each Play stages its walker
+picked (1 for Knuckles and Rouge, 2 for the walkers). With that mod installed (on or off), each Play stages its walker
 layouts, and the helper wraps the game's stage layout loader (LoadStageSETFile, 0x00488F60): as a
 speed stage's layout loads, the walkers' layout or the stage's usual one is copied over the file
 the game reads, for the character picked for it (`StageLayouts.java`, helper kind 13). A restart
-keeps the stage's layout, so it picks among the same kind. (The hunters were tried in speed stages in
-0.1.8: Tikal and Chaos drew a black screen, so they stay in their own stages.) **The Chao Walkers** in story stages: the walker's main (0x00741530) takes paths by
+keeps the stage's layout, so it picks among the same kind. Knuckles and Rouge join the speed group too (the hunters'
+layout when the SA2 Randomizer is there); Tikal and Chaos drew a black screen in speed stages
+(0.1.8) and stay in their own. The Dark Chao Walker crashes as a story stage loads it (every time
+in 0.1.10 and 0.1.11, guest read at 0x6B6E617A, the walker-main wrapper notwithstanding), so random
+leaves it out. **The Chao Walkers** in story stages: the walker's main (0x00741530) takes paths by
 `CharObj2Base.CharID2` that only Tails's and Eggman's walkers have data for (the Dark Chao Walker
 crashed as it loaded, the Chao Walker when it shot with the story's upgrades), so whenever they can
 turn up the helper wraps it: while it runs they read as Tails's and Eggman's walkers, and their

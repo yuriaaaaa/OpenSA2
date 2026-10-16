@@ -39,8 +39,8 @@ public class CharactersActivity extends Activity {
                     p.edit().putBoolean(NativePatch.RANDOM_PREF, on).apply();
                     show();
                 }));
-        col.addView(Ui.check(this, "With random: the walkers can turn up in speed stages too (Tails, Eggman and the Chao Walkers; "
-                + "very experimental: some may not be able to finish every stage)",
+        col.addView(Ui.check(this, "With random: Knuckles, Rouge and the walkers can turn up in speed stages too (very experimental; "
+                + "install the SA2 Randomizer mod, on or off, for stage layouts they can finish)",
                 p.getBoolean(NativePatch.RANDOM_ANY_PREF, false),
                 on -> p.edit().putBoolean(NativePatch.RANDOM_ANY_PREF, on).apply()));
         col.addView(Ui.text(this, "Random picks again each time a stage loads, and when you restart it or die before reaching a "

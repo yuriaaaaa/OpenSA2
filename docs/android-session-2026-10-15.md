@@ -478,3 +478,15 @@ Sonikko's light blue; which texture or model that is was not found yet (asked fo
   over the overlay path (raw openat/read/write). If the layout loads first, the pick is made there
   and LoadSonic takes it. A forced restart picks among the same class (the layout stays).
   Emulator-checked for both orders, and that a stage with no lines is left alone.
+
+# Twelfth session (2026-10-16): 0.1.12
+
+- On the phone (0.1.11): the stage layout switch works (`layout: stage 0xd set out for a walker
+  (2 of 2 file(s))`, then as usual for Amy and Sonic). The Dark Chao Walker still crashes on load
+  (same trap at 0x6B6E617A, twice); the user asked to leave it out and to put Knuckles, Rouge and
+  Eggman in speed stages. One Amy session crashed with a read at 0xC from 0x0042CBA7's caller, the
+  same kind of trap as a session in 0.1.x with no swaps, so not tied to the swap yet.
+- Random leaves the Dark Chao Walker out (no kind-10 line); Knuckles and Rouge carry bit 2.
+- Layout classes are now the pick's own group: 0 speed (the usual file), 1 hunter (Options 1.bin),
+  2 walker (2.bin). StageLayouts stages 1.bin too; the helper takes L lines of class 0-2, and a
+  forced restart picks among the class the layout was set out for.

@@ -580,7 +580,7 @@ final class NativePatch {
             }
             needWrap = true;
             plan.said.add("1".equals(swaps.get(RANDOM_ANY_KEY))
-                          ? "Characters: a random character each stage (the walkers too in speed stages, the same play style elsewhere)"
+                          ? "Characters: a random character each stage (Knuckles, Rouge and the walkers too in speed stages, the same play style elsewhere)"
                           : "Characters: a random character of the same play style each stage");
         }
         boolean walkers = random;
@@ -622,8 +622,12 @@ final class NativePatch {
                         if (!c.group.equals(GROUPS[g]) || !lib.has(c.load) || redirects.containsKey(c.load)) continue;
                         long[] f = lib.fns.get(c.load);
                         b.append(String.format(Locale.ROOT, "Z %x %x\n", f[0], c.load));
-                        // bit 2: also in the speed group (the walkers; hunters in a speed stage draw nothing)
-                        int member = g | (any && g == 2 ? 1 << 2 : 0);
+                        // The Dark Chao Walker crashes in stories (0.1.10 and 0.1.11 logs): left out.
+                        if (c.key.equals("darkchaowalker")) continue;
+                        // bit 2: also in the speed group (Knuckles, Rouge and the walkers; Tikal and
+                        // Chaos drew a black screen there)
+                        boolean speedToo = any && (g == 2 || c.key.equals("knuckles") || c.key.equals("rouge"));
+                        int member = g | (speedToo ? 1 << 2 : 0);
                         b.append(String.format(Locale.ROOT, "W %x %x %x %x %s %s\n", f[0], f[1], 10, member,
                                                hex(lib.bytes(f[0], 16)), "random " + c.name));
                         plan.patches++;
@@ -635,7 +639,7 @@ final class NativePatch {
                     b.append(String.format(Locale.ROOT, "W %x %x %x %x %s %s\n", sl[0], sl[1], 13, 0,
                                            hex(lib.bytes(sl[0], 16)), "stage layouts for walkers"));
                     plan.patches++;
-                    plan.said.add("Characters: speed stages get a walker's layout when a walker plays them (SA2 Randomizer's layouts)");
+                    plan.said.add("Characters: speed stages get a hunter's or walker's layout when one plays them (SA2 Randomizer's layouts)");
                 }
                 long[] rl = lib.fns.get(RESTART_RELOAD);
                 if (rl != null && !redirects.containsKey(RESTART_RELOAD)) {

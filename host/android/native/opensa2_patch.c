@@ -83,7 +83,7 @@
  * Chao Walkers read as Tails's and Eggman's walkers in the walker's main.
  * Kind 12 wraps a restart handler (fourth field 0: pause Restart, 1: after a death) and sends it
  * down the game's restart-with-reload handler, `Y <off> <guest va>`, so random picks again.
- * Kind 13 wraps the stage layout loader: `L <level> <class 0|2> <file> <where the game reads it>`
+ * Kind 13 wraps the stage layout loader: `L <level> <class 0|1|2> <file> <where the game reads it>`
  * lines give a speed stage a walker's layout (class 2) when a walker is to play it.
  */
 #include <stddef.h>
@@ -343,7 +343,7 @@ static int g_last_k[4] = {-1, -1, -1, -1};
 static uint32_t g_last_level[4];
 /* Each group member's own group (a walker is in the speed group too, its own group 2). */
 static uint8_t g_grp_home[4][MAX_GROUP];
-/* Kind 13: stage layouts per kind of stand-in (L lines: level, class 0 or 2, the layout to copy,
+/* Kind 13: stage layouts per kind of stand-in (L lines: level, class 0 speed, 1 hunter or 2 walker, the layout to copy,
  * where the game reads it). The class a speed stage's layout was put in place for, a pick made
  * as the layout loaded (before the characters), and whether a pick came after the last load. */
 #define MAX_LAYOUTS 96
@@ -462,7 +462,7 @@ static void parse_plan(const char *p) {
                 g_reload_va = (uint32_t)b;
             }
         } else if (t == 'L') {
-            if (parse_hex(&s, &a) && parse_hex(&s, &b) && g_nly < MAX_LAYOUTS && (b == 0 || b == 2)) {
+            if (parse_hex(&s, &a) && parse_hex(&s, &b) && g_nly < MAX_LAYOUTS && b <= 2) {
                 char *src = g_ly_src[g_nly], *dst = g_ly_dst[g_nly];
                 size_t k = 0;
                 while (*s && *s != ' ' && *s != '\n' && k + 1 < LAYOUT_PATH) src[k++] = *s++;
@@ -938,11 +938,11 @@ static void *wrap_random(wrap_t *w, void *state, uint32_t pc, void *memory) {
         k = g_last_k[grp];
         kept = 1;
     } else if (grp == 0 && g_force_repick && level == g_lay_level) {
-        /* A restart keeps the stage's layout, which suits walkers (class 2) or the others: pick
+        /* A restart keeps the stage's layout, which suits one kind (the class of the pick it was laid out for): pick
          * among those. */
         int c[MAX_GROUP], m = 0;
         for (int i = 0; i < n; i++)
-            if ((g_grp_home[0][i] == 2) == (g_lay_class == 2)) c[m++] = i;
+            if (g_grp_home[0][i] == g_lay_class) c[m++] = i;
         k = m ? c[rnd() % (uint32_t)m] : (int)(rnd() % (uint32_t)n);
     } else {
         k = (int)(rnd() % (uint32_t)n);
@@ -1080,7 +1080,7 @@ static void *wrap_setload(wrap_t *w, void *state, uint32_t pc, void *memory) {
     }
     g_load_k = k;
     g_load_level = level;
-    uint32_t cls = g_grp_home[0][k] == 2 ? 2 : 0;
+    uint32_t cls = g_grp_home[0][k] <= 2 ? g_grp_home[0][k] : 0;
     int done = 0, wanted = 0;
     for (int i = 0; i < g_nly; i++) {
         if (g_ly_level[i] != level || g_ly_class[i] != cls) continue;
@@ -1093,7 +1093,7 @@ static void *wrap_setload(wrap_t *w, void *state, uint32_t pc, void *memory) {
     begin();
     put("layout: stage ");
     put_hex(level);
-    put(cls == 2 ? " set out for a walker (" : " set out as usual (");
+    put(cls == 2 ? " set out for a walker (" : cls == 1 ? " set out for a treasure hunter (" : " set out as usual (");
     put_dec((uint64_t)done);
     put(" of ");
     put_dec((uint64_t)wanted);

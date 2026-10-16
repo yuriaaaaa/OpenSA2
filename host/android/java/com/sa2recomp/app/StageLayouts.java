@@ -14,7 +14,7 @@ import java.util.regex.Pattern;
  * Stage layouts for walkers in speed stages. The SA2 Randomizer mod (GameBanana 48932) ships, in
  * its Options folder, an object layout of each stage per kind of character
  * (Options/set0013_s/0.bin ... 4.bin); its DLL copies the one for the character it picked over
- * the stage's set file. Its code picks 2 for the walkers (Rando.dll: 0 Sonic and Shadow,
+ * the stage's set file. Its code picks 1 for Knuckles and Rouge, 2 for the walkers (Rando.dll: 0 Sonic and Shadow,
  * 1 Knuckles and Rouge, 4 Tails and Eggman on foot, 3 its ninth character, 2 the rest). The DLL
  * cannot run here, so with Characters' random walkers on, each Play stages the layouts and the
  * native helper (kind 13, around the game's stage layout loader) copies the walkers' one, or the
@@ -87,7 +87,7 @@ final class StageLayouts {
         for (File d : ds) {
             Matcher m = DIR.matcher(d.getName());
             if (!m.matches()) continue;
-            File walker = new File(d, "2.bin");
+            File walker = new File(d, "2.bin"), hunter = new File(d, "1.bin");
             if (!walker.isFile()) continue;
             int level = Integer.parseInt(m.group(1));
             String name = String.format(Locale.ROOT, "set%04d_%s.bin", level, m.group(2).toLowerCase(Locale.ROOT));
@@ -95,16 +95,19 @@ final class StageLayouts {
             File dest = ModManager.placeIn(overlay, readRoot, rel);
             File usual = dest.isFile() ? dest : OpenSa2.resolveCase(readRoot, rel);
             if (!usual.isFile()) continue;
-            File u = new File(cache, name + ".0"), w = new File(cache, name + ".2");
+            File u = new File(cache, name + ".0"), w = new File(cache, name + ".2"), h = new File(cache, name + ".1");
             try {
                 OpenSa2.copyFile(usual, u);
                 OpenSa2.copyFile(walker, w);
+                if (hunter.isFile()) OpenSa2.copyFile(hunter, h);
                 dest.getParentFile().mkdirs();
             } catch (IOException e) {
                 continue;
             }
             lines.append(String.format(Locale.ROOT, "L %x 0 %s %s\n", level, u.getAbsolutePath(), dest.getAbsolutePath()));
             lines.append(String.format(Locale.ROOT, "L %x 2 %s %s\n", level, w.getAbsolutePath(), dest.getAbsolutePath()));
+            if (hunter.isFile())
+                lines.append(String.format(Locale.ROOT, "L %x 1 %s %s\n", level, h.getAbsolutePath(), dest.getAbsolutePath()));
             written.append(dest.getAbsolutePath()).append('\n');
             stages++;
         }
