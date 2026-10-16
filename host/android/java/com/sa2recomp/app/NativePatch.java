@@ -454,6 +454,13 @@ final class NativePatch {
         }
         Plan plan = build(lib, codes, swaps, codeRanges());
         if (plan.patches == 0) return plan;
+        String refused = probe(c);
+        if (refused != null) {
+            plan.said.add("Native patches: Android will not load the helper into the game on this phone (" + refused
+                          + "), so code patches and character swaps are off");
+            plan.patches = 0;
+            return plan;
+        }
         try {
             OpenSa2.writeBytes(out, plan.text.getBytes(StandardCharsets.UTF_8));
         } catch (IOException e) {
@@ -462,6 +469,40 @@ final class NativePatch {
             plan.patches = 0;
         }
         return plan;
+    }
+
+    /**
+     * Whether this phone's dynamic linker takes the helper as an LD_PRELOAD for a program in the
+     * app's library folder: runs the installer executable that sits beside the game
+     * (libsa2install.so --help, same folder, same linker rules) with the helper preloaded and no
+     * plan, so the helper does nothing. A linker that refuses a preload either stops the program
+     * ("CANNOT LINK EXECUTABLE") or warns; the game would do the same, so then no plan is armed.
+     * Returns the linker's words, or null when it loaded (or the check could not be made).
+     */
+    static String probe(Context c) {
+        File dir = new File(c.getApplicationInfo().nativeLibraryDir);
+        File exe = new File(dir, "libsa2install.so"), helper = new File(dir, HELPER);
+        if (!exe.isFile() || !helper.isFile()) return null;
+        try {
+            ProcessBuilder pb = new ProcessBuilder(exe.getAbsolutePath(), "--help");
+            pb.environment().put("LD_PRELOAD", helper.getAbsolutePath());
+            pb.environment().remove("OPENSA2_PATCHES");
+            pb.redirectErrorStream(true);
+            pb.directory(c.getCacheDir());
+            Process p = pb.start();
+            byte[] out = OpenSa2.readAll(p.getInputStream(), 64 << 10);
+            if (!p.waitFor(10, java.util.concurrent.TimeUnit.SECONDS)) {
+                p.destroy();
+                return null;
+            }
+            for (String l : new String(out, StandardCharsets.UTF_8).split("\n")) {
+                if (l.contains("CANNOT LINK") || (l.contains(HELPER) && (l.contains("not") || l.contains("WARNING"))))
+                    return l.trim();
+            }
+            return null;
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     /** The plan for these codes and swaps against `lib` (`code`: the guest's code sections, or null). */
@@ -592,7 +633,7 @@ final class NativePatch {
         if (t == null) return out;
         for (String l : t.split("\n")) {
             if (l.startsWith("opensa2-patch: ")) out.add(l.substring(15));
-            else if (l.contains(HELPER) && (l.contains("WARNING") || l.contains("could not"))) out.add(l.trim());
+            else if (l.contains(HELPER) || l.contains("CANNOT LINK")) out.add(l.trim());
         }
         return out;
     }

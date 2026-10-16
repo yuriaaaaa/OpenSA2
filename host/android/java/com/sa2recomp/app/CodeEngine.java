@@ -24,9 +24,11 @@ import java.util.Set;
  * it through /proc/PID/mem, so every code that changes the game's data works as on Windows:
  * rings, lives, upgrades, timers, sizes and so on, run once a frame (about 60 times a second).
  *
- * What cannot work: the game's x86 code was recompiled ahead of time, so a write into an
+ * What cannot work here: the game's x86 code was recompiled ahead of time, so a write into an
  * executable section of the image (most "Patch" entries, and every writenop) changes bytes the
- * recompiled game never runs. Those writes are skipped and named in the log instead.
+ * recompiled game never runs. Those writes are skipped and named in the log. The ones that turn
+ * off or redirect a whole function are made natively at the start of a Play instead
+ * (NativePatch, setNative).
  */
 final class CodeEngine {
     private static final String TAG = "opensa2-codes";
@@ -271,7 +273,7 @@ final class CodeEngine {
         if (inCode(a)) {
             if (warned.add(c.name)) {
                 if (nativeCodes.contains(c.name)) say("in the game's code, applied at the start by the native helper: " + c.name);
-                else say("skipped (changes x86 code mid-function, which the recompiled game cannot take): " + c.name);
+                else say("not applied now (it changes the game's program code: a whole-function patch takes effect from the next Play, one in the middle of a function cannot work here; the Codes screen says which): " + c.name);
             }
             return;
         }
@@ -360,7 +362,7 @@ final class CodeEngine {
             case "nop":
                 if (warned.add(c.name)) {
                     if (nativeCodes.contains(c.name)) say("in the game's code, applied at the start by the native helper: " + c.name);
-                    else say("skipped (changes x86 code mid-function, which the recompiled game cannot take): " + c.name);
+                    else say("not applied now (it changes the game's program code: a whole-function patch takes effect from the next Play, one in the middle of a function cannot work here; the Codes screen says which): " + c.name);
                 }
                 return;
             case "conv": {
