@@ -93,8 +93,14 @@
  * the State offset of the register holding the structure). Kind 17 makes a shared function return
  * at once while a player is one of some CharIDs, outside a set of levels. Kinds 18 and 19 (Sonic_Main,
  * Sonic_Display) make Sonic and Shadow their super forms in every stage: `X <CharID2> <model file
- * name va> <texture list name va> <model index>`, `F <LoadMDLFile off> <va> <LoadCharTextures off>
- * <va>`.
+ * name va> <texture list name va> <model index> [<PhysicsArray index>]`, `F <LoadMDLFile off> <va>
+ * <LoadCharTextures off> <va>`; `B <button mask> <rings>` makes it a transformation (the button in
+ * a jump with that many rings, a ring a second, back at none or on the button again) instead of
+ * the form from the first frame; `D <cue> <cue> <frames> <rrggbb>` flashes the screen as it
+ * transforms and plays two voice-bank cues through `O <PlaySoundProbably off> <va>`; `E <CharID2>
+ * <texture list va> <name va> <name>` stands a mod's effect texture list in while super. Kind 20
+ * wraps PlayVoice: logs each voice number once, and plays `N <voice> <cue>` cues instead while
+ * player 1 is Sonic (needs the J line).
  */
 #include <stddef.h>
 #include <stdint.h>

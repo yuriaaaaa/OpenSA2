@@ -614,4 +614,10 @@ Sonikko's light blue; which texture or model that is was not found yet (asked fo
   (0xB0 at frame 8 where the form comes, gone at the end, one transformation), the voice redirect.
 - Voice bank (delivered, not committed): cues 09, 13, 18-21 in b03_sne/3.csb; clips trimmed,
   spectral-subtracted against their quietest frames, normalised, ADX at 44.1 kHz mono.
+- After 0.1.20 (logs): City Escape still crashed with Nazo on (the 0x94 trap at the stage start,
+  also in 0.1.14 and 0.1.19 sessions without the super form). The Nazo models name texture numbers
+  9, 10 and 37 while the mod's sonictex/sonic1tex hold 9 textures; Nazo v2 pads both to 48 (and
+  Chaos Nazo v4 its ssonictex, with the same names). Sessions where Always super was on did not
+  crash, as the super body replaced Nazo's. Not yet confirmed on the phone.
+- Hand-off written: docs/HANDOFF.md; the mod scripts are in tools/opensa2_android/modtools/.
 
