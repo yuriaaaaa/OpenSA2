@@ -62,5 +62,20 @@ Original project code is licensed under [GPL-3.0-only](LICENSE). Third-party dep
 
 OpenSA2 is an independent project by [kittycache](https://github.com/kittycache9). It is not affiliated with SEGA or Sonic Team. *Sonic Adventure 2* and its game assets belong to their respective rights holders.
 
+## Android fork additions
 
-Testing on galaxy s25. it using Claude.ai, my fork has support for mods with along with a randomizer/ character swap for each stage and codes like have all upgrades and moon jump and debug log in internal/OpenSA2/logs. some crashes may happen and not all mods work. any mod using x86.dlls need to be patched as android can't handle them functions. also included in this fork pressing Y after jump to turn into super form after collecting 50 rings. 
+This fork extends the experimental Android experience with additional launcher features and gameplay options. It is tested on a Samsung Galaxy S25.
+
+- **Mod support:** install and manage compatible mods, including mods sourced through GameBanana.
+- **Per-stage character randomizer:** randomize the playable character or use character swapping across stages.
+- **Gameplay codes:** enable options such as all upgrades and Moon Jump.
+- **Debug logs:** session logs are saved under `Internal storage/OpenSA2/logs` to help investigate issues.
+- **Super transformation:** after collecting at least 50 rings, press **Y while jumping** to transform into a Super form.
+
+### Compatibility and limitations
+
+This is an experimental fan-made fork, not an official SEGA or Sonic Team release. Crashes can occur, and not every mod is compatible. In particular, mods that depend on x86 Windows DLLs need Android-compatible patches; Android cannot load those DLLs as-is. Stage coverage and behavior may also vary because the underlying recompilation remains a work in progress. Please report reproducible issues with the relevant debug log, while keeping original game files and copyrighted assets out of public reports.
+
+### Development disclosure
+
+Claude.ai was used as an AI-assisted development tool for this fork. The project remains experimental, and the features and limitations listed above reflect the current state of the work.
