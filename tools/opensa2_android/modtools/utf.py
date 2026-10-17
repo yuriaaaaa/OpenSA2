@@ -31,7 +31,7 @@ def val(b, p, ty, s, dbase):
         o, n = struct.unpack_from('>II', b, p); return bytes(b[dbase+o:dbase+o+n]), p + 8
     raise ValueError(ty)
 def write(t):
-    strs = bytearray(b'<NULL>\0'); sidx = {}
+    strs = bytearray(b'<NULL>\0'); sidx = {'<NULL>': 0}
     def S(x):
         if x not in sidx: sidx[x] = len(strs); strs.extend(x.encode('latin1') + b'\0')
         return sidx[x]

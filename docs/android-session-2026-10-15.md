@@ -637,4 +637,8 @@ Sonikko's light blue; which texture or model that is was not found yet (asked fo
   walker main (kind 11) load the emerald manager once per character object, when no player is a
   hunter (CharID 4/5). No radar. Emulator-checked; on the phone it is to be seen whether the
   pieces can be reached and collected by a non-hunter.
+- The game's one-player bank (b03_sne/3.csb, from the user's phone): 40 cues, every element mono
+  22.05 kHz ADX in an AAX table, nch and sfreq constant columns; cue 9 (5441 samples) is Sonic's
+  jump-dash voice. Nazo Voices v5 is built from it (cues 9, 13, 18-21). The UTF writer stored
+  "<NULL>" twice; fixed, it now writes the game's file back byte for byte.
 

@@ -206,8 +206,10 @@ which are the trick lines is not known yet.
 5. **Voices did not play in 0.1.20** (laugh, "I'm back", homing, hurt): the bank v2 was 5.8 MB
    (the game's one-player bank is 78 KB) and its @UTF tables had 1 in the first header field where
    CRI's have 0. Nazo Voices v3: field 0, every element cut to the samples it plays, our clips at
-   22.05 kHz: 388 KB. Untested. If still silent, get the game's own `MPB/b03_sne/3.csb` from the
-   phone and build from it (cues 9 and 13 replaced, 18-21 added) instead of the two-player bank.
+   22.05 kHz: 388 KB; still silent. The user then sent the game's own `MPB/b03_sne/3.csb` (78 KB,
+   40 cues, mono 22.05 kHz with nch/sfreq as constant columns). Nazo Voices v5 is that file with
+   cues 9, 13, 18-21 replaced (`modtools/vbank.py`, 216 KB); `utf.py` now rewrites the game's file
+   byte for byte (it had stored "<NULL>" twice in the string pool). Untested on the phone.
 6. More voice lines from the user, as cues in Nazo Voices (`voicebank.py`).
 7. Open, older: the Dark Chao Walker crash; the Amy 0xC trap; resuming after the app is switched
    away; codes that patch the middle of a function.
