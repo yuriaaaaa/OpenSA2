@@ -58,6 +58,8 @@ Useful contributions include reproducible bug reports, synthetic tests, build se
 
 The project builds on [Remill](https://github.com/lifting-bits/remill), [LLVM](https://llvm.org/), [Ghidra](https://github.com/NationalSecurityAgency/ghidra), [SDL](https://github.com/libsdl-org/SDL), [DXVK Native](https://github.com/doitsujin/dxvk), and [dxbc-spirv](https://github.com/doitsujin/dxbc-spirv). Community research from the [SA2 Mod Loader](https://github.com/X-Hax/sa2-mod-loader) helps identify the original game's routines. [Unleashed Recompiled](https://github.com/hedge-dev/UnleashedRecomp) is a reference for the static-recompilation approach.
 
+**SA2 reverse-engineering and modding research:** [SA Docs](https://sadocs.unreliable.network/wiki/Sonic_Adventure_2) and the wider X-Hax community maintain an invaluable reference for understanding *Sonic Adventure 2*. Their documentation of game files and formats, models and textures, sound data, internal systems, functions, and addresses has been an important research resource for investigating the game and developing this Android fork. This fork is an independent project; this acknowledgement credits the documentation and community research, not authorship of the fork's code.
+
 Original project code is licensed under [GPL-3.0-only](LICENSE). Third-party dependencies retain their own licenses and notices. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 OpenSA2 is an independent project by [kittycache](https://github.com/kittycache9). It is not affiliated with SEGA or Sonic Team. *Sonic Adventure 2* and its game assets belong to their respective rights holders.
