@@ -591,4 +591,27 @@ Sonikko's light blue; which texture or model that is was not found yet (asked fo
   (Sora notes the GBIX texture cache: shared numbers would give back the loaded blue textures).
 - Not done: the aura (Sora's draws its own models with ss_efftex in a task of its own), music,
   flight, the transformation animation.
+- On the phone (0.1.19): Chaos Nazo shows in City Escape. Every session still had 0.1.18's
+  "super_forms" box on (now Always super), so the form came at the start; the Nazo Voices mod
+  was never on, so the homing line could not play; with the Nazo mod off the ball was Sonic's.
+  Two sessions ended with the known trap (a 4-byte read at 0x94 under 0x0042CBA7's callee, a
+  chunk-model draw; one without any patches planned), not tied to the super form.
+
+# Twentieth session (2026-10-17): 0.1.20
+
+- The ball and effects: kind 19 keeps the super texture list for the ball when both lists name
+  the same textures (the Chaos Nazo ssonictex is Nazo's sonictex recoloured, with a green
+  stx_newspin from SuperHedgehogs' Super Sonic ball); E line: a mod's csonefftex.pak stands in for
+  SonEff while Sonic is super, loaded by LoadCharTextures from a name written past .data's end.
+- The transformation flash and voices (D line, O line: the game's PlaySoundProbably with the cue
+  in ESI as Sora's mod plays its sounds), and kind 20 around PlayVoice: logs voice numbers and
+  plays a mod's cues for VoiceCues. Sonic's PlayVoice calls take numbers 1542-1545, 1560-1567
+  and 2666-2675 by character (the lifted callers in 0x721C00-0x726D00); which are the trick lines
+  is to be read from the next session's "voice:" lines (the Nazo Voices mod maps 1560 and 1562 to
+  "Yes" and 1564 to "Completely unreal" as a first guess).
+- Always super is a new setting ("super_always").
+- Emulator checks: the effect list while super and back, the ball lists alike or not, the flash
+  (0xB0 at frame 8 where the form comes, gone at the end, one transformation), the voice redirect.
+- Voice bank (delivered, not committed): cues 09, 13, 18-21 in b03_sne/3.csb; clips trimmed,
+  spectral-subtracted against their quietest frames, normalised, ADX at 44.1 kHz mono.
 

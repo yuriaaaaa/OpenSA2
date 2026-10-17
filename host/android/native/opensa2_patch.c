@@ -314,7 +314,7 @@ typedef struct {
     uint64_t from;          /* the wrapped function's offset (kind 16's Q lines) */
 } wrap_t;
 
-enum { WRAP_LAYOUT = 3, WRAP_TRACE = 4, WRAP_SPRITE = 5, WRAP_DISPATCH = 6, WRAP_PTR = 7, WRAP_GATE = 8, WRAP_FILL = 9, WRAP_RANDOM = 10, WRAP_MOVES = 11, WRAP_RESTART = 12, WRAP_SETLOAD = 13, WRAP_LEVELGATE = 14, WRAP_TEXSWAP = 15, WRAP_POSTSTORE = 16, WRAP_CHARGATE = 17, WRAP_SUPERMAIN = 18, WRAP_SUPERDISP = 19 };
+enum { WRAP_LAYOUT = 3, WRAP_TRACE = 4, WRAP_SPRITE = 5, WRAP_DISPATCH = 6, WRAP_PTR = 7, WRAP_GATE = 8, WRAP_FILL = 9, WRAP_RANDOM = 10, WRAP_MOVES = 11, WRAP_RESTART = 12, WRAP_SETLOAD = 13, WRAP_LEVELGATE = 14, WRAP_TEXSWAP = 15, WRAP_POSTSTORE = 16, WRAP_CHARGATE = 17, WRAP_SUPERMAIN = 18, WRAP_SUPERDISP = 19, WRAP_VOICE = 20 };
 #define TRACE_EARLY 16
 #define TRACE_LATE 48
 #define TRACE_LATER_MS 4000
@@ -404,6 +404,31 @@ static uint32_t g_t_button, g_t_rings;
 static uint32_t g_sp_co2[2], g_sp_tex[2], g_sp_old[2], g_sp_idx[2], g_sp_failed[2];
 static uint32_t g_sp_on[2], g_sp_list[2], g_sp_best[2];
 static uint8_t g_sp_phys[2][0x84];
+/* E line: while the X line's character (CharID2) with this CharID2 is the super form, the effect
+ * texture list at a VA (Sonic's SonEff) reads as a mod's own list, loaded by LoadCharTextures from
+ * a name the helper writes into the guest (a pak no stage loads, e.g. CSONEFFTEX). */
+static uint32_t g_e_id = 0xFFFFFFFFu, g_e_list, g_e_name_va;
+static char g_e_name[32];
+static uint32_t g_e_tex[2], g_e_on[2], g_e_saved[2][2];
+/* O line: the game's PlaySoundProbably (sound id in ESI, then three arguments on the stack), for
+ * sounds the helper plays: bank 3 (the character's voice bank) cue n is 0x3000 + n. */
+static uint64_t g_snd_off;
+static uint32_t g_snd_va;
+/* D line: with the transformation (B line), a green flash (ScreenFadeARGB, which the game draws
+ * over the screen while its alpha is not 0) for so many frames, one voice cue as it starts and
+ * another as it ends; the form changes a few frames in, at the flash's brightest. */
+static uint32_t g_v_cue1 = 0xFFFFFFFFu, g_v_cue2 = 0xFFFFFFFFu, g_v_frames, g_v_rgb;
+static uint32_t g_tr_t[2], g_fade_ours;
+#define SP_FADE 0x171CDA0u
+/* N lines (kind 20, around PlayVoice): while player 1 is Sonic's CharID2 (0), these voice numbers
+ * play a cue of the voice bank instead (a mod's own lines for its character); every voice number
+ * the game asks for is logged once, so the numbers can be found. */
+#define MAX_N 16
+static uint32_t g_n_num[MAX_N], g_n_cue[MAX_N], g_nn;
+static uint32_t g_vlog[64], g_nvlog;
+/* Kind 19: whether two texture lists are the same textures in the same order (by name), so the
+ * super form's list can draw what the old one would (the ball): asked once per pair. */
+static uint32_t g_par_a[2], g_par_b[2], g_par_r[2];
 static uint8_t g_callsave[0x400];
 /* Kind 11: CharObj2Base.CharID2 values read as another for the length of a call (M lines). */
 #define MAX_MOVES 8
@@ -463,7 +488,7 @@ static void parse_plan(const char *p) {
                 if (!parse_hex(&s, &r->to) || !parse_hex(&s, &r->to_va)) continue;
             } else {
                 if (!parse_hex(&s, &r->wrap_kind) || !parse_hex(&s, &r->preg)) continue;
-                if (r->wrap_kind > WRAP_SUPERDISP) continue;
+                if (r->wrap_kind > WRAP_VOICE) continue;
                 if (r->wrap_kind == WRAP_PTR ? (r->preg > 0x1FFF || (r->preg & 0xFFF) > 0x9F0) : r->preg > 0x9F0) continue;
                 if ((r->wrap_kind <= 2 || (r->wrap_kind == WRAP_PTR && (r->preg & 0xFFF) >= 0x800)) && (r->preg & 3)) continue;
             }
@@ -547,6 +572,38 @@ static void parse_plan(const char *p) {
                 g_x_idx[g_nx] = (uint32_t)d;
                 g_x_phys[g_nx] = parse_hex(&s, &a) ? (uint32_t)a : 0xFFFFFFFFu;
                 g_nx++;
+            }
+        } else if (t == 'O') {
+            if (parse_hex(&s, &a) && parse_hex(&s, &b)) {
+                g_snd_off = a;
+                g_snd_va = (uint32_t)b;
+            }
+        } else if (t == 'D') {
+            if (parse_hex(&s, &a) && parse_hex(&s, &b) && parse_hex(&s, &c) && parse_hex(&s, &d) && c < 1200) {
+                g_v_cue1 = (uint32_t)a;
+                g_v_cue2 = (uint32_t)b;
+                g_v_frames = (uint32_t)c;
+                g_v_rgb = (uint32_t)d & 0xFFFFFF;
+            }
+        } else if (t == 'N') {
+            if (parse_hex(&s, &a) && parse_hex(&s, &b) && g_nn < MAX_N) {
+                g_n_num[g_nn] = (uint32_t)a;
+                g_n_cue[g_nn] = (uint32_t)b;
+                g_nn++;
+            }
+        } else if (t == 'E') {
+            if (parse_hex(&s, &a) && parse_hex(&s, &b) && parse_hex(&s, &c)) {
+                int n = 0;
+                while (n < 31 && s[n] && s[n] != '\n' && s[n] != '\r' && s[n] != ' ') {
+                    g_e_name[n] = s[n];
+                    n++;
+                }
+                g_e_name[n] = 0;
+                if (n) {
+                    g_e_id = (uint32_t)a;
+                    g_e_list = (uint32_t)b;
+                    g_e_name_va = (uint32_t)c;
+                }
             }
         } else if (t == 'B') {
             if (parse_hex(&s, &a) && parse_hex(&s, &b)) {
@@ -1353,6 +1410,31 @@ static uint32_t guest_call(void *state, void *memory, uint64_t off, uint32_t va,
     return r;
 }
 
+/* As guest_call, with ESI set and up to three 32-bit arguments pushed (the caller's to pop). */
+static uint32_t guest_call_args(void *state, void *memory, uint64_t off, uint32_t va, uint32_t esi,
+                                const uint32_t *args, int nargs) {
+    uint8_t *g = guest();
+    uint8_t *st = (uint8_t *)state;
+    for (int i = 0; i < 0x400; i++) g_callsave[i] = st[0x800 + i];
+    uint32_t esp = *(uint32_t *)(st + 0x908) - 4 * (uint32_t)(nargs + 1);
+    if (!g_ok(esp, 4 * (uint32_t)(nargs + 1))) return 0;
+    g_wr32(g, esp, 0x401234);
+    for (int i = 0; i < nargs; i++) g_wr32(g, esp + 4 + 4 * (uint32_t)i, args[i]);
+    *(uint32_t *)(st + 0x908) = esp;
+    *(uint32_t *)(st + 0x8E8) = esi;
+    ((lifted_fn)(g_base + off))(state, va, memory);
+    uint32_t r = *(uint32_t *)(st + 0x8A8);
+    for (int i = 0; i < 0x400; i++) st[0x800 + i] = g_callsave[i];
+    return r;
+}
+
+/* Plays cue n of the voice bank (sound 0x3000 + n), as Sora's mod plays its sounds. */
+static void play_cue(void *state, void *memory, uint32_t cue) {
+    if (!g_snd_off || cue >= 0xFFF) return;
+    static const uint32_t zero[3] = {0, 0, 0};
+    guest_call_args(state, memory, g_snd_off, g_snd_va, 0x3000 + cue, zero, 3);
+}
+
 /* Kind 18, around Sonic_Main (Sonic's and Shadow's): Sonic and Shadow (the X lines' CharID2) become
  * their super forms as Sora's SA2 Super Sonic does it on transforming, outside Final Hazard (H set
  * 1): the game's super model (LoadMDLFile of SSONICMDL.PRS, index 328; SSHADOWMDL.PRS, 355) put in
@@ -1407,6 +1489,26 @@ static int super_load(void *state, void *memory, uint8_t *g, int p, uint32_t co2
     g_sp_tex[p] = tex;
     g_sp_co2[p] = co2;
     g_sp_idx[p] = idx;
+    g_e_tex[p] = 0;
+    if (g_e_list && g_x_id[k] == g_e_id && g_ok(g_e_name_va, 32) && g_ok(g_e_list, 8)) {
+        for (int i = 0; i < 32; i++) g[g_e_name_va + (uint32_t)i] = (uint8_t)g_e_name[i];
+        uint32_t et = guest_call(state, memory, g_texfn_off, g_texfn_va, g_e_name_va, g_e_name_va);
+        if (et && g_ok(et, 8) && g_rd32(g, et) && g_rd32(g, et + 4)) {
+            g_e_tex[p] = et;
+            begin();
+            put("super: effect textures ");
+            put(g_e_name);
+            put(" at ");
+            put_hex(et);
+            end();
+        } else {
+            begin();
+            put("super: effect textures ");
+            put(g_e_name);
+            put(" did not load; the usual ones stay");
+            end();
+        }
+    }
     begin();
     put("super: player ");
     put_dec((uint64_t)p);
@@ -1459,7 +1561,15 @@ static void super_on(uint8_t *g, int p, uint32_t co2, int k) {
             for (int i = 0; i < 0x84; i++) g[co2 + 0xC0 + (uint32_t)i] = g[ph + (uint32_t)i];
     }
     if (g_ok(co2 + 0x10, 2)) g[co2 + 0x11] |= (uint8_t)(SP_INVINCIBLE >> 8);
+    if (g_e_tex[p] && g_ok(g_e_list, 8)) {
+        g_e_saved[p][0] = g_rd32(g, g_e_list);
+        g_e_saved[p][1] = g_rd32(g, g_e_list + 4);
+        g_wr32(g, g_e_list, g_rd32(g, g_e_tex[p]));
+        g_wr32(g, g_e_list + 4, g_rd32(g, g_e_tex[p] + 4));
+        g_e_on[p] = 1;
+    }
     g_sp_on[p] = 1;
+    g_par_a[p] = g_par_b[p] = 0;   /* kind 19 looks at the two lists again */
     begin();
     put("super: player ");
     put_dec((uint64_t)p);
@@ -1473,6 +1583,12 @@ static void super_off(uint8_t *g, int p, uint32_t co2, int gone) {
     if (g_sp_list[p]) super_list_set(g, g_sp_list[p], g_sp_idx[p], g_sp_best[p]);
     g_sp_list[p] = 0;
     g_sp_on[p] = 0;
+    if (g_e_on[p] && g_e_tex[p] && g_ok(g_e_list, 8) && g_ok(g_e_tex[p], 8) &&
+        g_rd32(g, g_e_list) == g_rd32(g, g_e_tex[p]) && g_rd32(g, g_e_list + 4) == g_rd32(g, g_e_tex[p] + 4)) {
+        g_wr32(g, g_e_list, g_e_saved[p][0]);
+        g_wr32(g, g_e_list + 4, g_e_saved[p][1]);
+    }
+    g_e_on[p] = 0;
     if (gone || !co2 || !g_ok(co2 + 0x398, 4)) return;
     if (g_rd32(g, co2 + 0x394) == g_sp_tex[p] && g_sp_old[p]) g_wr32(g, co2 + 0x394, g_sp_old[p]);
     if (g_ok(co2 + 0xC0, 0x84))
@@ -1499,6 +1615,8 @@ static void *wrap_supermain(wrap_t *w, void *state, uint32_t pc, void *memory) {
                 /* a new character object (a new stage, a restart): what was loaded was for the old */
                 if (g_sp_on[p]) super_off(g, p, g_sp_co2[p], 1);
                 g_sp_co2[p] = 0;
+                if (g_tr_t[p] && g_ok(SP_FADE, 4) && g_rd32(g, SP_FADE) == g_fade_ours) g_wr32(g, SP_FADE, 0);
+                g_tr_t[p] = 0;
             }
             if (g_sp_failed[p] == co2) continue;
             uint32_t id2 = g[co2 + g_charid_off + 2];
@@ -1514,15 +1632,50 @@ static void *wrap_supermain(wrap_t *w, void *state, uint32_t pc, void *memory) {
                 continue;
             }
             /* transforming */
-            if (!g_ok(SP_GAMESTATE, 2) || g_rd16(g, SP_GAMESTATE) != 16) continue;   /* in game */
+            if (!g_ok(SP_GAMESTATE, 2) || g_rd16(g, SP_GAMESTATE) != 16) {   /* in game */
+                if (g_tr_t[p] && (g_rd16(g, SP_GAMESTATE) < 16 || g_rd16(g, SP_GAMESTATE) > 17)) {
+                    /* left the stage mid-flash: the flash goes, the form is given (or not) as is */
+                    if (g_ok(SP_FADE, 4) && g_rd32(g, SP_FADE) == g_fade_ours) g_wr32(g, SP_FADE, 0);
+                    g_tr_t[p] = 0;
+                }
+                continue;
+            }
             uint32_t d1 = g_ok(SP_CHAROBJ1 + 4 * (uint32_t)p, 4) ? g_rd32(g, SP_CHAROBJ1 + 4 * (uint32_t)p) : 0;
             uint32_t pad = SP_CONTROLLERS + 0x34 * (uint32_t)p;
             if (!d1 || !g_ok(d1, 8) || !g_ok(pad, 0x34) || !g_ok(SP_RINGS + 2 * (uint32_t)p, 2)) continue;
             uint32_t action = g[d1], press = g_rd32(g, pad + 0x10);
             int16_t rings = (int16_t)g_rd16(g, SP_RINGS + 2 * (uint32_t)p);
             int jumping = action == 6 || action == 13;   /* Action_Jump, Action_HomingAttack */
-            if (!g_sp_on[p]) {
+            if (g_tr_t[p]) {
+                /* the flash: up to the brightest in 8 frames (the form changes there), down to a
+                 * third by frame 40, held, and gone over the last 20 frames */
+                uint32_t t = g_tr_t[p]++, F = g_v_frames, a;
+                if (t <= 8) a = 0xB0 * t / 8;
+                else if (t <= 40) a = 0xB0 - (0xB0 - 0x3C) * (t - 8) / 32;
+                else if (t + 20 < F) a = 0x3C;
+                else a = t >= F ? 0 : 0x3C * (F - t) / 20;
+                int ours = g_ok(SP_FADE, 4) && g_rd32(g, SP_FADE) == g_fade_ours;
+                if (ours) {
+                    g_fade_ours = a ? (a << 24 | g_v_rgb) : 0;
+                    g_wr32(g, SP_FADE, g_fade_ours);
+                }
+                if (t == 8 && !g_sp_on[p]) {
+                    if (g_sp_co2[p] || super_load(state, memory, g, p, co2, k)) super_on(g, p, co2, k);
+                }
+                if (t >= F) {
+                    g_tr_t[p] = 0;
+                    if (g_v_cue2 != 0xFFFFFFFFu) play_cue(state, memory, g_v_cue2);
+                }
+                if (!g_sp_on[p]) continue;
+            } else if (!g_sp_on[p]) {
                 if (rings >= (int)g_t_rings && action == 6 && (press & g_t_button)) {
+                    if (g_v_frames >= 10 && g_ok(SP_FADE, 4) && !(g_rd32(g, SP_FADE) >> 24)) {
+                        /* the flash first; the form comes at its brightest */
+                        g_tr_t[p] = 1;
+                        g_fade_ours = g_rd32(g, SP_FADE);
+                        if (g_v_cue1 != 0xFFFFFFFFu) play_cue(state, memory, g_v_cue1);
+                        continue;
+                    }
                     if (!g_sp_co2[p] && !super_load(state, memory, g, p, co2, k)) continue;
                     super_on(g, p, co2, k);
                 }
@@ -1551,6 +1704,73 @@ static void *wrap_supermain(wrap_t *w, void *state, uint32_t pc, void *memory) {
 
 /* Kind 19, around Sonic_Display: while a super form is drawn as something its model is not (the
  * ball, an animation on another model), the old texture list is the player's for the call. */
+/* Kind 20, around PlayVoice (EDX, then the voice number on the stack): logs each number once and
+ * plays an N line's cue instead while player 1 is Sonic's CharID2. */
+static void *wrap_voice(wrap_t *w, void *state, uint32_t pc, void *memory) {
+    uint8_t *g = guest();
+    uint8_t *st = (uint8_t *)state;
+    uint32_t esp = *(uint32_t *)(st + 0x908);
+    if (!g || !g_guest_size || !g_ok(esp, 8)) return w->orig(state, pc, memory);
+    uint32_t num = g_rd32(g, esp + 4), ret = g_rd32(g, esp);
+    int seen = 0;
+    for (uint32_t i = 0; i < g_nvlog; i++) seen |= g_vlog[i] == num;
+    if (!seen && g_nvlog < 64) {
+        g_vlog[g_nvlog++] = num;
+        begin();
+        put("voice: the game asks for voice ");
+        put_dec(num);
+        put(" from ");
+        put_hex(ret);
+        end();
+    }
+    if (g_nn && g_ret_off && g_snd_off && g_co2_va && g_ok(g_co2_va, 4)) {
+        uint32_t co2 = g_rd32(g, g_co2_va);
+        if (co2 && g_ok(co2 + 4, 1) && g[co2 + g_charid_off + 2] == 0) {
+            for (uint32_t i = 0; i < g_nn; i++)
+                if (g_n_num[i] == num) {
+                    play_cue(state, memory, g_n_cue[i]);
+                    *(uint32_t *)(st + 0x8A8) = 1;
+                    return ((lifted_fn)(g_base + g_ret_off))(state, g_ret_va, memory);
+                }
+        }
+    }
+    return w->orig(state, pc, memory);
+}
+
+/* Whether texture lists a and b (NJS_TEXLIST: names, count; NJS_TEXNAME: filename, attr, texaddr)
+ * name the same textures in the same order: then a model made for a draws right with b. */
+static int super_parallel(const uint8_t *g, int p, uint32_t a, uint32_t b) {
+    if (g_par_a[p] == a && g_par_b[p] == b) return (int)g_par_r[p];
+    int r = 0;
+    if (g_ok(a, 8) && g_ok(b, 8)) {
+        uint32_t na = g_rd32(g, a), nb = g_rd32(g, b), ca = g_rd32(g, a + 4), cb = g_rd32(g, b + 4);
+        r = ca == cb && ca > 0 && ca < 1024 && g_ok(na, 12 * ca) && g_ok(nb, 12 * cb);
+        for (uint32_t i = 0; r && i < ca; i++) {
+            uint32_t sa = g_rd32(g, na + 12 * i), sb = g_rd32(g, nb + 12 * i);
+            if (!g_ok(sa, 1) || !g_ok(sb, 1)) { r = 0; break; }
+            for (uint32_t j = 0;; j++) {
+                if (!g_ok(sa + j, 1) || !g_ok(sb + j, 1) || j > 64) { r = 0; break; }
+                uint8_t x = g[sa + j], y = g[sb + j];
+                if (x >= 'A' && x <= 'Z') x = (uint8_t)(x + 32);
+                if (y >= 'A' && y <= 'Z') y = (uint8_t)(y + 32);
+                if (x != y) { r = 0; break; }
+                if (!x) break;
+            }
+        }
+    }
+    g_par_a[p] = a;
+    g_par_b[p] = b;
+    g_par_r[p] = (uint32_t)r;
+    begin();
+    put("super: texture lists ");
+    put_hex(a);
+    put(" and ");
+    put_hex(b);
+    put(r ? " name the same textures: the ball keeps the super ones" : " differ: the ball is drawn with the old ones");
+    end();
+    return r;
+}
+
 static void *wrap_superdisp(wrap_t *w, void *state, uint32_t pc, void *memory) {
     uint8_t *g = guest();
     int swapped[2] = {0, 0};
@@ -1558,6 +1778,7 @@ static void *wrap_superdisp(wrap_t *w, void *state, uint32_t pc, void *memory) {
         for (int p = 0; p < 2; p++) {
             uint32_t co2 = g_sp_co2[p];
             if (!co2 || !g_ok(co2 + 0x398, 4) || g_rd32(g, co2 + 0x394) != g_sp_tex[p] || !g_sp_old[p]) continue;
+            if (super_parallel(g, p, g_sp_old[p], g_sp_tex[p])) continue;
             int other = 0;
             uint32_t list = g_rd32(g, co2 + 0x198), cur = g_rd16(g, co2 + 0x178);
             if (cur < 256 && list && g_ok(list + 16 * cur + 2, 2) && g_rd16(g, list + 16 * cur + 2) != g_sp_idx[p]) other = 1;
@@ -1596,6 +1817,7 @@ static void *wrap_common(int slot, void *state, uint32_t pc, void *memory) {
     case WRAP_CHARGATE: return wrap_chargate(w, state, pc, memory);
     case WRAP_SUPERMAIN: return wrap_supermain(w, state, pc, memory);
     case WRAP_SUPERDISP: return wrap_superdisp(w, state, pc, memory);
+    case WRAP_VOICE: return wrap_voice(w, state, pc, memory);
     default: break;
     }
     uint8_t *g = guest();
@@ -1838,6 +2060,7 @@ static void apply(uintptr_t base, uint64_t psize) {
             else if (r->wrap_kind == WRAP_CHARGATE) known = known && g_level_va && g_co2_va && g_ret_off;
             else if (r->wrap_kind == WRAP_SUPERMAIN) known = known && g_level_va && g_co2_va && g_nx && g_mdlfn_off && g_texfn_off;
             else if (r->wrap_kind == WRAP_SUPERDISP) known = known && g_nx;
+            else if (r->wrap_kind == WRAP_VOICE) known = known && g_co2_va && (!g_nn || (g_ret_off && g_snd_off));
             if (r->wrap_kind == WRAP_RANDOM) {
                 uint32_t grp = (uint32_t)r->preg & 3, va = 0;
                 for (int z = 0; z < g_nz; z++)

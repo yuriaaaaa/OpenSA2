@@ -49,8 +49,9 @@ public class CharactersActivity extends Activity {
                 + "experimental)", p.getBoolean(NativePatch.MOVES_PREF, true),
                 on -> p.edit().putBoolean(NativePatch.MOVES_PREF, on).apply()));
         col.addView(Ui.check(this, "Super transformation: with 50 rings or more, press Y in a jump to become Super Sonic "
-                + "or Super Shadow (after Sora's SA2 Super Sonic). A ring a second goes; at none, or on Y in a jump "
-                + "again, you are back. With the Chaos Nazo mod on, Nazo becomes Chaos Nazo. Not in Final Hazard.",
+                + "or Super Shadow (after Sora's SA2 Super Sonic), with a green flash. A ring a second goes; at none, or on Y "
+                + "in a jump again, you are back. With the Chaos Nazo mod on, Nazo becomes Chaos Nazo (and with Nazo Voices, "
+                + "he laughs). Not in Final Hazard.",
                 p.getBoolean(NativePatch.TRANSFORM_PREF, true),
                 on -> p.edit().putBoolean(NativePatch.TRANSFORM_PREF, on).apply()));
         col.addView(Ui.check(this, "Always super: Sonic and Shadow are Super Sonic and Super Shadow from the start of every "

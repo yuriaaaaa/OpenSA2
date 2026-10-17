@@ -802,15 +802,21 @@ def super_checks(game, patch, check):
     fn, fsize = sym["sub_7f4700"]
     rt, _ = sym["sub_6fe430"]
     f16 = game.b[game.vaddr_to_off(fn):game.vaddr_to_off(fn) + 16].hex()
+    dfn, dsize = sym["sub_411600"]
+    d16 = game.b[game.vaddr_to_off(dfn):game.vaddr_to_off(dfn) + 16].hex()
     for tline in ("", "B 200 32"):
+        extra = [tline, "E 0 a08b94 2670e00 CSONEFFTEX"] if tline else []
         plan = "\n".join(["opensa2-patch 1", f"G {fb:x} 20000000", "C 1934b70 1de9600 1 5b", "H 42 1",
-                          "X 0 1100000 1100100 148 9", f"F {rt:x} 6fe430 {rt:x} 6fe430"] + ([tline] if tline else [])
-                         + [f"W {fn:x} {fsize:x} 12 0 {f16} supermain"]) + "\n"
+                          "X 0 1100000 1100100 148 9", f"F {rt:x} 6fe430 {rt:x} 6fe430"] + extra
+                         + [f"W {fn:x} {fsize:x} 12 0 {f16} supermain"]
+                         + ([f"W {dfn:x} {dsize:x} 13 0 {d16} superdisp"] if tline else [])) + "\n"
         uc, sc = boot(game, patch, plan.encode())
-        check("1 of 1 patch(es) applied" in sc.err.decode(), "super: the main wrapper applied")
+        nw = 2 if tline else 1
+        check(f"{nw} of {nw} patch(es) applied" in sc.err.decode(), "super: the wrappers applied")
         gb = guest_base_var(uc, game)
         uc.mem_write(gb, struct.pack("<Q", GUEST))
-        for a in (0x1934000, 0x1DE9000, 0x1000000, 0x1100000, 0x1200000, 0x1F0000, 0x1730000, 0x1740000):
+        for a in (0x1934000, 0x1DE9000, 0x1000000, 0x1100000, 0x1200000, 0x1F0000, 0x1730000, 0x1740000,
+                  0xA00000, 0x2670000):
             try:
                 uc.mem_map(GUEST + a, 0x10000, UC_PROT_READ | UC_PROT_WRITE)
             except UcError:
@@ -880,7 +886,117 @@ def super_checks(game, patch, check):
             check(is_self(frame(1, 0, 180)), "super (transform): himself again at no rings")
             check(is_super(frame(55, 0x200, 7)), "super (transform): again")
             check(is_self(frame(55, 0x200, 8)), "super (transform): the button in a jump turns back")
+            # the effect list: the mod's (the stand-in loader hands back the name's address) while super
+            uc.mem_write(GUEST + 0xA08B94, struct.pack("<II", 0x5000, 7))
+            frame(55, 0x200, 7)
+            eff = bytes(uc.mem_read(GUEST + 0xA08B94, 8))
+            check(eff == b"CSONEFFT", f"super (transform): Sonic's effect list is the mod's while super ({eff})")
+            frame(55, 0x200, 8)
+            eff = struct.unpack("<II", bytes(uc.mem_read(GUEST + 0xA08B94, 8)))
+            check(eff == (0x5000, 7), f"super (transform): and his own again after ({eff})")
+            # kind 19: the ball keeps the super textures when both lists name the same textures
+            def texlist(at, names):
+                uc.mem_write(GUEST + at, struct.pack("<II", at + 0x40, len(names)))
+                for i, n in enumerate(names):
+                    uc.mem_write(GUEST + at + 0x40 + 12 * i, struct.pack("<III", at + 0x100 + 0x20 * i, 0, 0))
+                    uc.mem_write(GUEST + at + 0x100 + 0x20 * i, n.encode() + b"\0")
+            for old_names, same in ((["S_WIND", "stx_00"], True), (["s_wind", "stx_01"], False)):
+                texlist(0x1000800, old_names)
+                texlist(0x1100100, ["s_wind", "stx_00"])
+                uc.mem_write(GUEST + 0x1000394, struct.pack("<I", 0x1000800))
+                frame(55, 0x200, 7)                                    # super: the old list is kept aside
+                uc.mem_write(GUEST + 0x1000178, struct.pack("<H", 30))   # the ball's animation (model 6)
+                uc.mem_write(GUEST + 0x1F8000, struct.pack("<I", 0x401234))
+                st = bytearray(0x1000)
+                struct.pack_into("<I", st, 0x908, 0x1F8000)
+                uc.mem_write(STATE, bytes(st))
+                run_function(uc, GAME_BASE + dfn, STATE, 0x411600, 0, limit=400000)
+                said = sc.err.decode()
+                want = "name the same textures" if same else "differ: the ball is drawn with the old ones"
+                check(f"super: texture lists 0x1000800 and 0x1100100 {want}" in said,
+                      f"super (display): lists {'alike' if same else 'unlike'} -> {want}")
+                tex = u32(bytes(uc.mem_read(GUEST + 0x1000394, 4)), 0)
+                check(tex == 0x1100100, f"super (display): the super list is the player's after the call ({hex(tex)})")
+                uc.mem_write(GUEST + 0x1000178, struct.pack("<H", 0))
+                frame(55, 0x200, 8)                                    # back, for the next round
         print("   ", [l for l in sc.err.decode().splitlines() if "super:" in l][:4])
+
+
+def flash_voice_checks(game, patch, check):
+    """The D line: Y in a jump with 50 rings starts a green flash (ScreenFadeARGB) and plays cue 18
+    (the O line's sound function, the ret function standing in, called with ESI 0x3012); the form
+    comes at frame 8, the flash is gone at the D line's last frame and cue 19 plays then. Kind 20
+    around a ret-shaped function standing in for PlayVoice: a voice number of an N line returns at
+    once with EAX 1 while player 1 is Sonic, others run the function; each number is logged once."""
+    sym = game.syms
+    fb, _ = sym["sa2_guest_fast_base"]
+    fn, fsize = sym["sub_7f4700"]
+    vfn, vsize = sym["sub_46f1c1"]
+    rt, _ = sym["sub_6fe430"]
+    f16 = game.b[game.vaddr_to_off(fn):game.vaddr_to_off(fn) + 16].hex()
+    v16 = game.b[game.vaddr_to_off(vfn):game.vaddr_to_off(vfn) + 16].hex()
+    plan = "\n".join(["opensa2-patch 1", f"G {fb:x} 20000000", "C 1934b70 1de9600 1 5b", "H 42 1",
+                      "X 0 1100000 1100100 148 9", f"F {rt:x} 6fe430 {rt:x} 6fe430", "B 200 32",
+                      f"O {rt:x} 6fe430", "D 12 13 3c 40ff60", "N 618 14", f"J {rt:x} 6fe430",
+                      f"W {fn:x} {fsize:x} 12 0 {f16} supermain",
+                      f"W {vfn:x} {vsize:x} 14 0 {v16} voice"]) + "\n"
+    uc, sc = boot(game, patch, plan.encode())
+    check("2 of 2 patch(es) applied" in sc.err.decode(), "flash: the wrappers applied")
+    gb = guest_base_var(uc, game)
+    uc.mem_write(gb, struct.pack("<Q", GUEST))
+    for a in (0x1934000, 0x1DE9000, 0x1000000, 0x1100000, 0x1200000, 0x1F0000, 0x1730000, 0x1740000, 0x1710000):
+        try:
+            uc.mem_map(GUEST + a, 0x10000, UC_PROT_READ | UC_PROT_WRITE)
+        except UcError:
+            pass
+    uc.mem_write(GUEST + 0x1934B70, struct.pack("<h", 13))
+    uc.mem_write(GUEST + 0x1934BE0, struct.pack("<h", 16))
+    uc.mem_write(GUEST + 0x1DE9600, struct.pack("<II", 0x1000000, 0))
+    uc.mem_write(GUEST + 0x1DEA6C0, struct.pack("<II", 0x1003000, 0))
+    co2 = bytearray(0x400)
+    struct.pack_into("<I", co2, 0x198, 0x1200000)
+    struct.pack_into("<I", co2, 0x394, 0xAAAA0000)
+    uc.mem_write(GUEST + 0x1000000, bytes(co2))
+    uc.mem_write(GUEST + 0x1003000, bytes([6]) + bytes(15))
+    uc.mem_write(GUEST + 0x1100000, struct.pack("<iI", 328, 0x5678) + struct.pack("<iI", -1, 0))
+    lst = bytearray(16 * 203)
+    for i in range(203):
+        struct.pack_into("<hh", lst, 16 * i, i, 6 if i == 30 else 0)
+    uc.mem_write(GUEST + 0x1200000, bytes(lst))
+    esis = []
+
+    def call(f, va, num=None, press=0, rings=60):
+        uc.mem_write(GUEST + 0x174B028, struct.pack("<h", rings))
+        uc.mem_write(GUEST + 0x174B03C, struct.pack("<I", 7))
+        uc.mem_write(GUEST + 0x1DEFC10, struct.pack("<I", press))
+        uc.mem_write(GUEST + 0x1F8000, struct.pack("<II", 0x401234, num or 0))
+        st = bytearray(0x1000)
+        struct.pack_into("<I", st, 0x908, 0x1F8000)
+        struct.pack_into("<I", st, 0x8A8, 0x77)
+        uc.mem_write(STATE, bytes(st))
+        run_function(uc, GAME_BASE + f, STATE, va, 0, limit=400000)
+        return bytes(uc.mem_read(STATE, 0x1000))
+
+    alphas, forms = [], []
+    call(fn, 0x7F4700, press=0x200)
+    for t in range(70):
+        call(fn, 0x7F4700)
+        alphas.append(bytes(uc.mem_read(GUEST + 0x171CDA0, 4))[3])
+        forms.append(u32(bytes(uc.mem_read(GUEST + 0x1000394, 4)), 0) == 0x1100100)
+    col = bytes(uc.mem_read(GUEST + 0x171CDA0, 4))
+    check(max(alphas) == 0xB0 and alphas[7] == 0xB0, f"flash: up to 0xB0 by frame 8 ({alphas[:10]})")
+    check(forms.index(True) == 7, f"flash: the form comes at the brightest (frame {forms.index(True) + 1})")
+    check(alphas[-1] == 0 and col == b"\0\0\0\0", f"flash: gone at the end ({alphas[50:62]})")
+    said = sc.err.decode()
+    check(said.count("is the super form") == 1, "flash: one transformation")
+    s2 = call(vfn, 0x46F1C1, num=0x618)
+    check(u32(s2, 0x8A8) == 1 and u32(s2, 0x908) == 0x1F8004, f"voice: voice 1560 for Sonic is the cue (EAX {u32(s2, 0x8A8)})")
+    s3 = call(vfn, 0x46F1C1, num=0x619)
+    check(u32(s3, 0x908) == 0x1F8004, "voice: another number runs the function")
+    said = sc.err.decode()
+    check("voice: the game asks for voice 1560" in said and "voice: the game asks for voice 1561" in said,
+          "voice: each number logged")
+    print("   ", [l for l in said.splitlines() if "voice:" in l or "flash" in l][:4])
 
 
 def layout_checks(game, patch, check):
@@ -1344,6 +1460,7 @@ def main():
     spindash_checks(game, patch, check)
     chargate_checks(game, patch, check)
     super_checks(game, patch, check)
+    flash_voice_checks(game, patch, check)
     print("ALL PASS" if ok else "SOME FAILED")
     return 0 if ok else 1
 

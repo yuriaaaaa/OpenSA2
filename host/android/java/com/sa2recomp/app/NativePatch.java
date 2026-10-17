@@ -121,7 +121,8 @@ final class NativePatch {
     static final String RANDOM_PREF = "swap_random", RANDOM_KEY = "*random*";
     /** With random on: anyone may turn up in a speed stage (the speed group draws from all twelve). */
     static final String RANDOM_ANY_PREF = "swap_random_any", RANDOM_ANY_KEY = "*any*", MOVES_KEY = "*moves*", SUPER_KEY = "*super*",
-            TRANSFORM_KEY = "*transform*";
+            TRANSFORM_KEY = "*transform*", SUPER_EFFECTS_KEY = "*supereffects*",
+            TRANSFORM_VOICES_KEY = "*transformvoices*", TRANSFORM_FLASH_KEY = "*transformflash*", VOICE_CUES_KEY = "*voicecues*";
     private static final int CHECKPOINT_RECORDS = 0x1934B88;
     /** The game's restart handlers (cases of its GameState switch) keep the character object; the
      * restart-with-reload one fades, tears the stage down and moves to GameState 5 (delete and load
@@ -137,12 +138,57 @@ final class NativePatch {
      * Super Sonic: on their first frame in a stage (Sonic_Main, kind 18) the game's own super model and
      * textures are loaded and put in place and their animation list's body model becomes the super
      * model; Sonic_Display (kind 19) draws the ball with the old textures. */
-    static final String SUPER_PREF = "super_forms";
+    static final String SUPER_PREF = "super_always";   // 0.1.18's "super_forms" test box is not carried over
     /** Sonic and Shadow transform as in Sora's SA2 Super Sonic: Y in a jump with 50 rings or more
      * (the B line), a ring a second after, themselves again at none or on Y in a jump again. A
      * mod's SSONICMDL/SSONICTEX (Chaos Nazo) is the super form they take. */
     static final String TRANSFORM_PREF = "super_transform";
     private static final int BUTTON_Y = 0x200, TRANSFORM_RINGS = 50;
+    /** A mod's own effect textures for Super Sonic (the E line): gd_PC/PRS/csonefftex.pak, the
+     * layout of Sonic's s_efftex, stands in for Sonic's effect list (SonEff, 0x00A08B94) while he is
+     * the super form; its name is written into unused guest memory past .data's end (0x02670E00,
+     * before .rsrc at 0x02671000), since no game string names it. */
+    static final String SUPER_EFFECTS_PAK = "csonefftex.pak", SUPER_EFFECTS_NAME = "CSONEFFTEX";
+    private static final int SUPER_EFFECTS_NAME_VA = 0x2670E00;
+
+    /** A mod's own voices for the transformation and in place of game voices, from its mod.ini
+     * [OpenSA2] group: TransformVoices=<cue>,<cue> (bank 3 cues: during the flash, after it),
+     * TransformFlash=<rrggbb>[,<frames>], VoiceCues=<voice>:<cue>,... (PlayVoice numbers played as a
+     * bank 3 cue while player 1 is Sonic). The first mod switched on that names each wins. */
+    static final int PLAY_SOUND = 0x437260, PLAY_VOICE = 0x443130;
+
+    static void modVoices(Context c, Map<String, String> into) {
+        for (ModManager.Mod m : ModManager.active(c)) {
+            Map<String, Map<String, String>> ini = ModManager.readIni(ModManager.child(m.dir, "mod.ini"));
+            Map<String, String> g = null;
+            for (Map.Entry<String, Map<String, String>> e : ini.entrySet())
+                if (e.getKey().equalsIgnoreCase("OpenSA2")) g = e.getValue();
+            if (g == null) continue;
+            String tv = ModManager.get(g, "TransformVoices"), tf = ModManager.get(g, "TransformFlash"),
+                   vc = ModManager.get(g, "VoiceCues");
+            if (!tv.isEmpty() && !into.containsKey(TRANSFORM_VOICES_KEY)) into.put(TRANSFORM_VOICES_KEY, tv);
+            if (!tf.isEmpty() && !into.containsKey(TRANSFORM_FLASH_KEY)) into.put(TRANSFORM_FLASH_KEY, tf);
+            if (!vc.isEmpty() && !into.containsKey(VOICE_CUES_KEY)) into.put(VOICE_CUES_KEY, vc);
+        }
+    }
+
+    private static int num(String s, int radix, int dflt) {
+        try {
+            return Integer.parseInt(s.trim(), radix);
+        } catch (NumberFormatException e) {
+            return dflt;
+        }
+    }
+
+    /** Whether a mod switched on ships the super effect textures. */
+    static boolean superEffects(Context c) {
+        for (ModManager.Mod m : ModManager.active(c))
+            for (File root : m.roots) {
+                File f = ModManager.child(ModManager.child(ModManager.child(root, "gd_PC"), "PRS"), SUPER_EFFECTS_PAK);
+                if (f.isFile()) return true;
+            }
+        return false;
+    }
     private static final int SONIC_MAIN = 0x717840, SONIC_DISPLAY = 0x720090, LOAD_MDL_FILE = 0x459590,
             LOAD_CHAR_TEXTURES = 0x44C510;
     private static final int[][] SUPER_FORMS = {   // CharID2, model file name, texture list name, model index,
@@ -513,6 +559,9 @@ final class NativePatch {
         File out = new File(c.getFilesDir(), PLAN);
         out.delete();
         Map<String, String> swaps = swaps(c);
+        if (swaps.containsKey(SUPER_KEY) || swaps.containsKey(TRANSFORM_KEY))
+            if (superEffects(c)) swaps.put(SUPER_EFFECTS_KEY, "1");
+        if (swaps.containsKey(TRANSFORM_KEY)) modVoices(c, swaps);
         boolean anySwap = false;
         for (Map.Entry<String, String> e : swaps.entrySet())
             anySwap |= !e.getKey().equals(MOVES_KEY) && !e.getKey().equals(e.getValue());
@@ -722,6 +771,48 @@ final class NativePatch {
                 b.append(String.format(Locale.ROOT, "F %x %x %x %x\n", mdlf[0], LOAD_MDL_FILE, texf[0], LOAD_CHAR_TEXTURES));
                 for (int[] x : SUPER_FORMS) b.append(String.format(Locale.ROOT, "X %x %x %x %x %x\n", x[0], x[1], x[2], x[3], x[4]));
                 if (transform) b.append(String.format(Locale.ROOT, "B %x %x\n", BUTTON_Y, TRANSFORM_RINGS));
+                long[] sndf = lib.fns.get(PLAY_SOUND), voicef = lib.fns.get(PLAY_VOICE);
+                int rv = retFunction(lib);
+                long[] rf = rv > 0 ? lib.fns.get(rv) : null;
+                String tvs = swaps.get(TRANSFORM_VOICES_KEY), tfl = swaps.get(TRANSFORM_FLASH_KEY), vcs = swaps.get(VOICE_CUES_KEY);
+                if (transform && sndf != null) {
+                    b.append(String.format(Locale.ROOT, "O %x %x\n", sndf[0], PLAY_SOUND));
+                    // the flash (green by default, 3.75 s) and a mod's voices for it
+                    int c1 = -1, c2 = -1, rgb = 0x40FF60, frames = 225;   // -1: no voice
+                    if (tvs != null) {
+                        String[] v = tvs.split(",");
+                        c1 = num(v[0], 10, -1);
+                        if (v.length > 1) c2 = num(v[1], 10, -1);
+                    }
+                    if (tfl != null) {
+                        String[] v = tfl.split(",");
+                        rgb = num(v[0], 16, rgb) & 0xFFFFFF;
+                        if (v.length > 1) frames = Math.max(10, Math.min(1199, num(v[1], 10, frames)));
+                    }
+                    b.append(String.format(Locale.ROOT, "D %x %x %x %x\n", c1, c2, frames, rgb));
+                    plan.said.add("Characters: transforming flashes" + (tvs != null ? ", with a mod's voices (" + tvs + ")" : ""));
+                    if (voicef != null && rf != null && !redirects.containsKey(PLAY_VOICE)) {
+                        int n = 0;
+                        if (vcs != null)
+                            for (String pair : vcs.split(",")) {
+                                String[] kv = pair.split(":");
+                                if (kv.length != 2) continue;
+                                int vn = num(kv[0], 10, -1), cue = num(kv[1], 10, -1);
+                                if (vn < 0 || cue < 0 || cue > 0xFFF || n >= 16) continue;
+                                b.append(String.format(Locale.ROOT, "N %x %x\n", vn, cue));
+                                n++;
+                            }
+                        b.append(String.format(Locale.ROOT, "J %x %x\n", rf[0], rv));
+                        b.append(String.format(Locale.ROOT, "W %x %x %x %x %s %s\n", voicef[0], voicef[1], 20, 0,
+                                               hex(lib.bytes(voicef[0], 16)), "voices (logged; a mod's lines for Sonic)"));
+                        plan.patches++;
+                        if (n > 0) plan.said.add("Characters: " + n + " of Sonic's voices are a mod's lines");
+                    }
+                }
+                if ("1".equals(swaps.get(SUPER_EFFECTS_KEY))) {
+                    b.append(String.format(Locale.ROOT, "E 0 %x %x %s\n", TEX_SONEFF, SUPER_EFFECTS_NAME_VA, SUPER_EFFECTS_NAME));
+                    plan.said.add("Characters: Super Sonic's effects use a mod's " + SUPER_EFFECTS_PAK);
+                }
                 b.append(String.format(Locale.ROOT, "W %x %x %x %x %s %s\n", smain[0], smain[1], 18, 0,
                                        hex(lib.bytes(smain[0], 16)), "Sonic and Shadow as their super forms"));
                 b.append(String.format(Locale.ROOT, "W %x %x %x %x %s %s\n", sdisp[0], sdisp[1], 19, 0,
