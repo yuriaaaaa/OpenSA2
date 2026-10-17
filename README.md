@@ -61,3 +61,6 @@ The project builds on [Remill](https://github.com/lifting-bits/remill), [LLVM](h
 Original project code is licensed under [GPL-3.0-only](LICENSE). Third-party dependencies retain their own licenses and notices. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 OpenSA2 is an independent project by [kittycache](https://github.com/kittycache9). It is not affiliated with SEGA or Sonic Team. *Sonic Adventure 2* and its game assets belong to their respective rights holders.
+
+
+Testing on galaxy s25. it using Claude.ai, my fork has support for mods with along with a randomizer/ character swap for each stage and codes like have all upgrades and moon jump and debug log in internal/OpenSA2/logs. some crashes may happen and not all mods work. any mod using x86.dlls need to be patched as android can't handle them functions. also included in this fork pressing Y after jump to turn into super form after collecting 50 rings. 
