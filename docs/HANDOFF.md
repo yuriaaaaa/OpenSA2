@@ -173,7 +173,7 @@ which are the trick lines is not known yet.
 
 - **Nazo (no Seelkadoom) v2**: KyronSaif/Sonicgamer11's Nazo repacked: `sonicmdl/` and
   `sonic1mdl/` model folders (Wrath of Nazo is the alt costume), sonictex/sonic1tex padded to 48,
-  s_wind fix, s_efftex, zanki/mission textures, `MPB/b03_sn_btl_e/3.csb`, stageMap with Shadow's
+  s_wind fix, s_efftex (silver since v3, the user's wish: Nazo silver, Chaos Nazo green), zanki/mission textures, `MPB/b03_sn_btl_e/3.csb`, stageMap with Shadow's
   portrait restored. Seelkadoom, event voices, edited motions and the DLL left out.
 - **Chaos Nazo v4**: `ssonicmdl/` (Nazo's body as index 328 with rewritten UVs) +
   `PRS/ssonictex.pak` (green fur, yellow eyes with black pupils and edge, purple gem, white gloves
@@ -202,8 +202,13 @@ which are the trick lines is not known yet.
    Chaos Nazo's green ball and light-green effects (needs the Nazo mod on for the ball).
 4. **The green aura** around Chaos Nazo (Sora's mod draws its own aura models with ss_efftex in a
    task; not done).
-5. More voice lines from the user, as cues in Nazo Voices (`voicebank.py`).
-6. Open, older: the Dark Chao Walker crash; the Amy 0xC trap; resuming after the app is switched
+5. **Voices did not play in 0.1.20** (laugh, "I'm back", homing, hurt): the bank v2 was 5.8 MB
+   (the game's one-player bank is 78 KB) and its @UTF tables had 1 in the first header field where
+   CRI's have 0. Nazo Voices v3: field 0, every element cut to the samples it plays, our clips at
+   22.05 kHz: 388 KB. Untested. If still silent, get the game's own `MPB/b03_sne/3.csb` from the
+   phone and build from it (cues 9 and 13 replaced, 18-21 added) instead of the two-player bank.
+6. More voice lines from the user, as cues in Nazo Voices (`voicebank.py`).
+7. Open, older: the Dark Chao Walker crash; the Amy 0xC trap; resuming after the app is switched
    away; codes that patch the middle of a function.
 
 ## 10. Related projects (the brother's)

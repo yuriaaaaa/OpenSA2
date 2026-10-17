@@ -54,8 +54,8 @@ def write(t):
             if st == 0x50: rows += enc(ty, r[nm], S, D)
     hdr = 24
     rows_off = hdr + len(cols); str_off = rows_off + len(rows); data_off = str_off + len(strs)
-    pad = (-data_off) % 32; data_off += pad
-    body = struct.pack('>HHIIIHHI', 1, rows_off, str_off, data_off, S(t['name']), len(t['cols']), rowlen, len(t['rows']))
+    pad = (-data_off) % 8; data_off += pad
+    body = struct.pack('>HHIIIHHI', 0, rows_off, str_off, data_off, S(t['name']), len(t['cols']), rowlen, len(t['rows']))
     body += cols + rows + strs + b'\0' * pad + data
     while len(body) % 4: body += b'\0'
     return b'@UTF' + struct.pack('>I', len(body)) + body

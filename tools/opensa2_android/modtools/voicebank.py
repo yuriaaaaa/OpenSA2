@@ -20,6 +20,17 @@ for r in top['rows']:
     if sub['name'] != 'TBLSDL': renall(sub)
     if sub['name'] == 'TBLSDL':
         renall(sub)
+        # every element cut to the samples it plays (the Nazo bank's carry ~10 s of silence each)
+        for e in sub['rows']:
+            if not e['data'] or e['data'][:4] != b'@UTF': continue
+            aax = utf.read(e['data']); d = aax['rows'][0]['data']
+            if d[:2] != b'\x80\x00': continue
+            start, bs, nch, rate, n, cut = adx.header(d)
+            keep = min(n, e['nsmpl'])
+            frames = (keep + 31) // 32
+            nd = bytearray(d[:start]); struct.pack_into('>I', nd, 0xC, keep)
+            nd += d[start:start + frames * bs * nch] + struct.pack('>HH', 0x8001, bs - 4) + bytes(bs - 4)
+            aax['rows'][0]['data'] = bytes(nd); e['data'] = utf.write(aax)
         for cue, path in clips.items():
             cue = int(cue)
             w = wave.open(path); nch = w.getnchannels(); rate = w.getframerate()
