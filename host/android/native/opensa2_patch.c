@@ -410,6 +410,11 @@ static uint32_t g_t_button, g_t_rings;
 static uint32_t g_sp_co2[2], g_sp_tex[2], g_sp_old[2], g_sp_idx[2], g_sp_failed[2];
 static uint32_t g_sp_on[2], g_sp_list[2], g_sp_best[2];
 static uint8_t g_sp_phys[2][0x84];
+/* I line: LoadEmeraldManager. In the levels of H set 2 (the hunting stages), when no player is a
+ * treasure hunter (CharID 4 or 5), Sonic_Main (kind 18) or the walker main (kind 11) loads the
+ * emerald manager once per character object, so a speed character or a walker can hunt there. */
+static uint64_t g_em_off;
+static uint32_t g_em_va, g_em_co2;
 /* E line: while the X line's character (CharID2) with this CharID2 is the super form, the effect
  * texture list at a VA (Sonic's SonEff) reads as a mod's own list, loaded by LoadCharTextures from
  * a name the helper writes into the guest (a pak no stage loads, e.g. CSONEFFTEX). */
@@ -578,6 +583,11 @@ static void parse_plan(const char *p) {
                 g_x_idx[g_nx] = (uint32_t)d;
                 g_x_phys[g_nx] = parse_hex(&s, &a) ? (uint32_t)a : 0xFFFFFFFFu;
                 g_nx++;
+            }
+        } else if (t == 'I') {
+            if (parse_hex(&s, &a) && parse_hex(&s, &b)) {
+                g_em_off = a;
+                g_em_va = (uint32_t)b;
             }
         } else if (t == 'O') {
             if (parse_hex(&s, &a) && parse_hex(&s, &b)) {
@@ -1126,8 +1136,31 @@ static void *wrap_random(wrap_t *w, void *state, uint32_t pc, void *memory) {
  * length of the wrapped call each player whose CharID2 is an M line's `from` reads its `to`, and
  * is put back after (unless the game changed it meanwhile). A nested call finds it already
  * changed and leaves it to the outer one. */
+static uint32_t guest_call(void *state, void *memory, uint64_t off, uint32_t va, uint32_t eax, uint32_t ecx);
+static void hunt_check(void *state, void *memory, uint8_t *g) {
+    if (!g_em_off || !g || !g_guest_size || !g_co2_va || !g_level_va || !g_ok(g_level_va, 2)) return;
+    if (!g_ok(0x1934BE0u, 2) || g_rd16(g, 0x1934BE0u) != 16) return;   /* in game */
+    uint32_t level = g_rd16(g, g_level_va);
+    int hunt = 0;
+    for (int i = 0; i < g_nhlevel; i++) hunt |= g_hlevel[i] == level && g_hset[i] == 2;
+    if (!hunt || !g_ok(g_co2_va, 8)) return;
+    uint32_t co2 = g_rd32(g, g_co2_va);
+    if (!co2 || co2 == g_em_co2) return;
+    g_em_co2 = co2;
+    for (int p = 0; p < 2; p++) {
+        uint32_t c = g_rd32(g, g_co2_va + 4 * (uint32_t)p);
+        if (c && g_ok(c + g_charid_off, 1) && (g[c + g_charid_off] == 4 || g[c + g_charid_off] == 5)) return;
+    }
+    guest_call(state, memory, g_em_off, g_em_va, 0, 0);
+    begin();
+    put("hunt: the emerald manager loaded for a non-hunter in stage ");
+    put_hex(level);
+    end();
+}
+
 static void *wrap_moves(wrap_t *w, void *state, uint32_t pc, void *memory) {
     uint8_t *g = guest();
+    hunt_check(state, memory, g);
     if (!g || !g_guest_size || !g_co2_va || !g_nmv) return w->orig(state, pc, memory);
     uint32_t at[2] = {0, 0};
     uint8_t was[2] = {0, 0}, now[2] = {0, 0};
@@ -1609,6 +1642,7 @@ static void super_off(uint8_t *g, int p, uint32_t co2, int gone) {
 
 static void *wrap_supermain(wrap_t *w, void *state, uint32_t pc, void *memory) {
     uint8_t *g = guest();
+    hunt_check(state, memory, g);
     if (g && g_guest_size && g_co2_va && g_level_va && g_ok(g_level_va, 2) && g_mdlfn_off && g_texfn_off) {
         uint32_t level = g_rd16(g, g_level_va);
         int fh = 0;
@@ -1753,7 +1787,7 @@ static int super_parallel(const uint8_t *g, int p, uint32_t a, uint32_t b) {
         r = ca == cb && ca > 0 && ca < 1024 && g_ok(na, 12 * ca) && g_ok(nb, 12 * cb);
         for (uint32_t i = 0; r && i < ca; i++) {
             uint32_t sa = g_rd32(g, na + 12 * i), sb = g_rd32(g, nb + 12 * i);
-            if (!g_ok(sa, 1) || !g_ok(sb, 1)) { r = 0; break; }
+            if (!g_ok(sa, 1) || !g_ok(sb, 1)) break;   /* names not in guest memory: the counts decide */
             for (uint32_t j = 0;; j++) {
                 if (!g_ok(sa + j, 1) || !g_ok(sb + j, 1) || j > 64) { r = 0; break; }
                 uint8_t x = g[sa + j], y = g[sb + j];
@@ -2057,14 +2091,14 @@ static void apply(uintptr_t base, uint64_t psize) {
             if (r->wrap_kind <= 2) known = known && g_co2_va && g_level_va;
             else if (r->wrap_kind == WRAP_LAYOUT) known = known && g_h_va && g_v_va && g_hud_off && g_sw_off && g_real_off;
             else if (r->wrap_kind == WRAP_FILL) known = known && g_h_va && g_v_va;
-            else if (r->wrap_kind == WRAP_MOVES) known = known && g_co2_va && g_nmv;
+            else if (r->wrap_kind == WRAP_MOVES) known = known && g_co2_va && (g_nmv || g_em_off);
             else if (r->wrap_kind == WRAP_RESTART) known = known && g_level_va && g_reload_off;
             else if (r->wrap_kind == WRAP_SETLOAD) known = known && g_level_va && g_nly;
             else if (r->wrap_kind == WRAP_LEVELGATE) known = known && g_level_va && g_ret_off && g_nhlevel;
             else if (r->wrap_kind == WRAP_TEXSWAP) known = known && g_co2_va && g_nsw;
             else if (r->wrap_kind == WRAP_POSTSTORE) known = known && g_nq;
             else if (r->wrap_kind == WRAP_CHARGATE) known = known && g_level_va && g_co2_va && g_ret_off;
-            else if (r->wrap_kind == WRAP_SUPERMAIN) known = known && g_level_va && g_co2_va && g_nx && g_mdlfn_off && g_texfn_off;
+            else if (r->wrap_kind == WRAP_SUPERMAIN) known = known && g_level_va && g_co2_va && ((g_nx && g_mdlfn_off && g_texfn_off) || g_em_off);
             else if (r->wrap_kind == WRAP_SUPERDISP) known = known && g_nx;
             else if (r->wrap_kind == WRAP_VOICE) known = known && g_co2_va && (!g_nn || (g_ret_off && g_snd_off));
             if (r->wrap_kind == WRAP_RANDOM) {

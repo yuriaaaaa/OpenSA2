@@ -692,6 +692,15 @@ final class NativePatch {
             if (to.key.startsWith("super")) supers = true;
         }
         moves = moves && "1".equals(swaps.get(MOVES_KEY));
+        // A treasure hunter's stages played by someone else (a speed character or a walker): the
+        // emerald manager is loaded for them (I line, H set 2), and the SA2 Randomizer's own layouts
+        // for those stages (a goal ring at the start) are left out.
+        boolean huntOthers = false;
+        for (Map.Entry<String, String> e : swaps.entrySet()) {
+            if (e.getKey().startsWith("*") || e.getKey().equals(e.getValue())) continue;
+            Chara from = chara(e.getKey()), to = chara(e.getValue());
+            if (from != null && to != null && from.group.equals("hunt") && !to.group.equals("hunt")) huntOthers = true;
+        }
         boolean transform = "1".equals(swaps.get(TRANSFORM_KEY)) && !"1".equals(swaps.get(SUPER_KEY));
         boolean superForms = "1".equals(swaps.get(SUPER_KEY)) || transform;
         for (Map.Entry<String, String> e : swaps.entrySet()) {
@@ -754,6 +763,21 @@ final class NativePatch {
                 }
             }
             long[] sl = lib.fns.get(STAGE_SET_LOAD);
+            if ((any || cross) && layouts != null && !layouts.isEmpty()) {
+                // in the hunting stages only the hunters' layouts (class 1) stay
+                StringBuilder kept = new StringBuilder();
+                for (String l : layouts.split("\n")) {
+                    String[] f = l.trim().split("\\s+");
+                    if (f.length > 2 && f[0].equals("L")) {
+                        int lv = num(f[1], 16, -1), cls = num(f[2], 16, 0);
+                        boolean hunting = false;
+                        for (int h : HUNTING_LEVELS) hunting |= h == lv;
+                        if (hunting && cls != 1) continue;
+                    }
+                    if (!l.trim().isEmpty()) kept.append(l.trim()).append('\n');
+                }
+                layouts = kept.toString();
+            }
             if ((any || cross) && layouts != null && !layouts.isEmpty() && sl != null && !redirects.containsKey(STAGE_SET_LOAD)) {
                 b.append(layouts);
                 b.append(String.format(Locale.ROOT, "W %x %x %x %x %s %s\n", sl[0], sl[1], 13, 0,
@@ -765,6 +789,18 @@ final class NativePatch {
             long[] retf = retVa > 0 ? lib.fns.get(retVa) : null;
             long[] mdlf = lib.fns.get(LOAD_MDL_FILE), texf = lib.fns.get(LOAD_CHAR_TEXTURES),
                    smain = lib.fns.get(SONIC_MAIN), sdisp = lib.fns.get(SONIC_DISPLAY);
+            long[] emf = lib.fns.get(LOAD_EMERALD_MANAGER);
+            boolean hunt = huntOthers && emf != null;
+            if (hunt) {
+                b.append(String.format(Locale.ROOT, "I %x %x\n", emf[0], LOAD_EMERALD_MANAGER));
+                for (int lv : HUNTING_LEVELS) b.append(String.format(Locale.ROOT, "H %x 2\n", lv));
+                plan.said.add("Characters: in the treasure hunting stages, a speed character or a walker gets the emeralds to find (no radar)");
+                if (!(superForms && mdlf != null && texf != null) && smain != null && !redirects.containsKey(SONIC_MAIN)) {
+                    b.append(String.format(Locale.ROOT, "W %x %x %x %x %s %s\n", smain[0], smain[1], 18, 0,
+                                           hex(lib.bytes(smain[0], 16)), "emerald hunt for speed characters"));
+                    plan.patches++;
+                }
+            }
             if (superForms && mdlf != null && texf != null && smain != null && sdisp != null
                 && !redirects.containsKey(SONIC_MAIN) && !redirects.containsKey(SONIC_DISPLAY)) {
                 b.append(String.format(Locale.ROOT, "H %x 1\n", FINAL_HAZARD));
@@ -938,6 +974,10 @@ final class NativePatch {
                                        hex(lib.bytes(wm[0], 16)), "Chao Walkers as story walkers"));
                 plan.patches++;
                 plan.said.add("Characters: the Chao Walkers run as the story walkers in their main (experimental)");
+            } else if (huntOthers && fb != null && wm != null && !redirects.containsKey(WALKER_MAIN)) {
+                b.append(String.format(Locale.ROOT, "W %x %x %x %x %s %s\n", wm[0], wm[1], 11, 0x11,
+                                       hex(lib.bytes(wm[0], 16)), "emerald hunt for walkers"));
+                plan.patches++;
             }
             if (needWrap && fb == null) {
                 plan.said.add("Character swap: this build does not expose the game's memory, so swapped characters "

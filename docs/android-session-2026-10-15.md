@@ -621,3 +621,20 @@ Sonikko's light blue; which texture or model that is was not found yet (asked fo
   crash, as the super body replaced Nazo's. Not yet confirmed on the phone.
 - Hand-off written: docs/HANDOFF.md; the mod scripts are in tools/opensa2_android/modtools/.
 
+# Twenty-first session (2026-10-17): 0.1.21
+
+- On the phone (0.1.20, Nazo v2, Chaos Nazo v4): Nazo plays City Escape in story (the padding
+  fixed the 0x94 trap); the transformation and its flash work. Voices still silent with Nazo
+  Voices v3 (388 KB); the game's own one-player bank is needed to build from. The voice log
+  gave Sonic's numbers in City Escape: 1543 (0x71D730), 1545 and 1541 (0x721EE4), 1553
+  (0x46E1F5), 1593 (0x43F1F9, the level start), 1597/1599 (0x44FCDC, the rank), 1806, 2091/2092.
+  Kind 19 said the Nazo/Chaos Nazo lists "differ": the texture names are not in guest memory;
+  the counts now decide when they cannot be read (both padded to 48).
+- Speed characters and walkers in Wild Canyon (Knuckles's slot): the SA2 Randomizer's layouts for
+  them there put a goal ring at the start. In the hunting stages only the hunters' layouts (class
+  1) are kept now; and when a hunter's stage is played by someone else, the I line
+  (LoadEmeraldManager 0x73AA70, H set 2 = the hunting stages) has Sonic_Main (kind 18) or the
+  walker main (kind 11) load the emerald manager once per character object, when no player is a
+  hunter (CharID 4/5). No radar. Emulator-checked; on the phone it is to be seen whether the
+  pieces can be reached and collected by a non-hunter.
+

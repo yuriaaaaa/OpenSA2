@@ -41,7 +41,7 @@ with an aarch64 Android target (for the helper), Java 17+, Python 3 with `unicor
 
 ```bash
 # APK (the version name/code defaults live in build_apk.py; bump them each release:
-#      0.1.20-opensa2 / 12100 now, next 0.1.21-opensa2 / 12200)
+#      0.1.21-opensa2 / 12200 now, next 0.1.22-opensa2 / 12300)
 python3 tools/opensa2_android/build_apk.py \
   --release-apk <OpenSA2-v0.1.0-alpha.1-android-arm64.apk> \
   --sdk <android-sdk> --sdl <SDL3-3.4.16> \
@@ -133,6 +133,7 @@ Check before adding one: a clash (I once reused `V`) silently breaks other featu
 | 0.1.16-0.1.17 | Super Sonic/Shadow via their own loaders outside Final Hazard (gates for LastBossPlayerManager, Exec_Load, PResetPos): still crashed; abandoned. |
 | 0.1.18 | Super forms in place, after Sora's SA2-Super-Sonic: the super model and textures on Sonic's own moves (works on the phone). |
 | 0.1.19 | Transformation: Y in a jump with 50 rings, a ring a second, back at none or on Y; super physics and invincibility. |
+| 0.1.21 | Speed characters and walkers in the hunting stages get the emerald manager (no radar) and the vanilla layout, not the SA2 Randomizer's (its goal ring at the start); kind 19 decides by count when texture names cannot be read. |
 | 0.1.20 | Transformation flash (ScreenFadeARGB) and a mod's voice cues; voice-number log and mod voice mapping (kind 20); a mod's super effect textures (csonefftex); the ball keeps the super textures when the lists match; Always super moved to a new setting. |
 
 ## 6. Debugging record (the causes found)

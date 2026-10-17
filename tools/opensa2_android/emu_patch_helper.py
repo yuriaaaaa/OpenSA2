@@ -999,6 +999,46 @@ def flash_voice_checks(game, patch, check):
     print("   ", [l for l in said.splitlines() if "voice:" in l or "flash" in l][:4])
 
 
+def hunt_checks(game, patch, check):
+    """The I line: around Sonic_Main (kind 18, here the ret function sub_7f4700) in a level of H set
+    2, a player that is not a hunter gets the emerald manager (the ret function standing in) once
+    per character object; a hunter (CharID 4) gets none; another level none."""
+    sym = game.syms
+    fb, _ = sym["sa2_guest_fast_base"]
+    fn, fsize = sym["sub_7f4700"]
+    rt, _ = sym["sub_6fe430"]
+    f16 = game.b[game.vaddr_to_off(fn):game.vaddr_to_off(fn) + 16].hex()
+    plan = "\n".join(["opensa2-patch 1", f"G {fb:x} 20000000", "C 1934b70 1de9600 1 5b", f"I {rt:x} 6fe430",
+                      "H 10 2", f"W {fn:x} {fsize:x} 12 0 {f16} hunt"]) + "\n"
+    uc, sc = boot(game, patch, plan.encode())
+    check("1 of 1 patch(es) applied" in sc.err.decode(), "hunt: the wrapper applied")
+    gb = guest_base_var(uc, game)
+    uc.mem_write(gb, struct.pack("<Q", GUEST))
+    for a in (0x1934000, 0x1DE9000, 0x1000000, 0x1F0000):
+        try:
+            uc.mem_map(GUEST + a, 0x10000, UC_PROT_READ | UC_PROT_WRITE)
+        except UcError:
+            pass
+    uc.mem_write(GUEST + 0x1934BE0, struct.pack("<h", 16))
+
+    def frame(level, co2, charid):
+        uc.mem_write(GUEST + 0x1934B70, struct.pack("<h", level))
+        uc.mem_write(GUEST + 0x1DE9600, struct.pack("<II", co2, 0))
+        uc.mem_write(GUEST + co2, bytes([0, charid, 0, charid]))
+        uc.mem_write(GUEST + 0x1F8000, struct.pack("<I", 0x401234))
+        st = bytearray(0x1000)
+        struct.pack_into("<I", st, 0x908, 0x1F8000)
+        uc.mem_write(STATE, bytes(st))
+        run_function(uc, GAME_BASE + fn, STATE, 0x7F4700, 0, limit=400000)
+        return sc.err.decode().count("hunt: the emerald manager loaded")
+
+    check(frame(0xD, 0x1000000, 0) == 0, "hunt: not in City Escape")
+    check(frame(0x10, 0x1000000, 0) == 1, "hunt: Sonic in Wild Canyon gets the emerald manager")
+    check(frame(0x10, 0x1000000, 0) == 1, "hunt: once per character object")
+    check(frame(0x10, 0x1000400, 4) == 1, "hunt: none for a hunter")
+    check(frame(0x10, 0x1000800, 6) == 2, "hunt: a walker's new object gets it again")
+
+
 def layout_checks(game, patch, check):
     """Kind 3 (laid out at 16:9) around sub_86eac0, which calls the ret function sub_6fe430,
     itself traced (kind 4): inside, HorizontalResolution reads 1920 for a 2340x1080 screen and the
@@ -1461,6 +1501,7 @@ def main():
     chargate_checks(game, patch, check)
     super_checks(game, patch, check)
     flash_voice_checks(game, patch, check)
+    hunt_checks(game, patch, check)
     print("ALL PASS" if ok else "SOME FAILED")
     return 0 if ok else 1
 
