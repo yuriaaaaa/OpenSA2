@@ -641,4 +641,7 @@ Sonikko's light blue; which texture or model that is was not found yet (asked fo
   22.05 kHz ADX in an AAX table, nch and sfreq constant columns; cue 9 (5441 samples) is Sonic's
   jump-dash voice. Nazo Voices v5 is built from it (cues 9, 13, 18-21). The UTF writer stored
   "<NULL>" twice; fixed, it now writes the game's file back byte for byte.
+- v5 on the phone: the lines play, two cues late on the transformation ("Yes" in the flash,
+  "Completely unreal" after). A bank's cue numbers count only its non-empty cues (empty = one
+  sample): cues 11 and 12 are empty, so 0x3012 was file 20. Nazo Voices v6 shifts the numbers.
 

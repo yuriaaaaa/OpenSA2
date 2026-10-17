@@ -209,7 +209,11 @@ which are the trick lines is not known yet.
    22.05 kHz: 388 KB; still silent. The user then sent the game's own `MPB/b03_sne/3.csb` (78 KB,
    40 cues, mono 22.05 kHz with nch/sfreq as constant columns). Nazo Voices v5 is that file with
    cues 9, 13, 18-21 replaced (`modtools/vbank.py`, 216 KB); `utf.py` now rewrites the game's file
-   byte for byte (it had stored "<NULL>" twice in the string pool). Untested on the phone.
+   byte for byte (it had stored "<NULL>" twice in the string pool). On the phone the lines play, but
+   a sound id's cue number counts only the bank's non-empty cues (nsmpl 1 = empty): with cues 11
+   and 12 empty, id 0x3012 played cue file 20. Nazo Voices v6: TransformVoices=16,17,
+   VoiceCues=1541:18,1543:18,1545:19 (which voice numbers are "Nice" and "Jammin'" tricks is
+   still a guess from the City Escape log).
 6. More voice lines from the user, as cues in Nazo Voices (`voicebank.py`).
 7. Open, older: the Dark Chao Walker crash; the Amy 0xC trap; resuming after the app is switched
    away; codes that patch the middle of a function.
