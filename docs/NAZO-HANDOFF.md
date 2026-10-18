@@ -15,7 +15,7 @@ OpenSA2 0.1.21:
 |---|---|---|
 | Nazo (no Seelkadoom) | v3 | KyronSaif/Sonicgamer11's Nazo over Sonic, with Wrath of Nazo as the alt costume. `sonicmdl/` and `sonic1mdl/` model folders. sonictex/sonic1tex are padded to 48 textures (the mod's models name textures 9, 10 and 37, and the archive past 9 crashed City Escape's start). s_efftex is recoloured silver (Nazo's spin and dash effects). |
 | Chaos Nazo | v4 | The super form. `ssonicmdl/` holds Nazo's body as model 328 with rewritten UVs. `PRS/ssonictex.pak` has green fur, yellow eyes, a purple gem, white gloves with gold cuffs, black/purple/gold shoes and a green-and-black ball; it is padded to 48 with the same texture names as Nazo's sonictex. `PRS/csonefftex.pak` holds the light-green effects. |
-| Nazo Voices | v7 | `MPB/b03_sne/3.csb`: the game's own one-player voice bank with cue files 9 (homing "hmmph"), 13 (hurt "No!"), 18 (laugh), 19 ("I'm back"), 20 ("Yes"), 21 ("Completely unreal") and 22 (death roar). Its mod.ini `[OpenSA2]` group sets `TransformVoices=16,17`, `TransformFlash=40FF60,302` (the flash as long as the laugh), `DeathVoice=20` and `VoiceCues=1541:18,1543:18,1545:19`. |
+| Nazo Voices | v8 | `MPB/b03_sne/3.csb`: the game's own one-player voice bank with cue files 9 (homing "hmmph"), 13 (hurt "No!"), 20 (laugh), 21 ("I'm back"), 22 ("Yes"), 23 ("Completely unreal"), 24 (death roar) and 25 ("Curse you"). Its mod.ini `[OpenSA2]` group sets `TransformVoices=18,19`, `TransformFlash=40FF60,302` (the flash as long as the laugh) and `VoiceCues=1541:20,1543:20,1545:21,1565:22,1567:22,1569:22,1571:22,1597:23` (tricks, the four death voices and rank B, numbers from SA Docs' Voice_List). |
 
 Mod order on the phone: Chaos Nazo, Nazo Voices, Nazo, all on. Sora's "Super Sonic / Shadow"
 (DLL) mod and the original "Nazo & Seelkadoom" mod must be off. On the Characters screen, tick
@@ -37,10 +37,12 @@ Mod order on the phone: Chaos Nazo, Nazo Voices, Nazo, all on. Sora's "Super Son
   PlaySoundProbably 0x437260 (ESI = 0x3000 + cue). Wrapper kind 20 around PlayVoice 0x443130 logs
   every voice number once (`opensa2-patch: voice: the game asks for voice N from 0x...`). For the
   numbers in VoiceCues it plays a bank cue instead, while player 1 is Sonic.
-- **Cue numbering (important):** the game counts a bank's cues **leaving out the empty ones**.
-  An empty cue is one sample long; cues 11 and 12 are empty in the game's bank. So cue files
-  18-21 are numbers 16-19 in TransformVoices and VoiceCues. Cue 9 and cue 13 are the game's own
-  slots, numbered as the game plays them.
+- **Cue numbering (important):** the game's sound numbers for bank 3 (0x3000 + n) follow SA
+  Docs' "Internal ID" column (Sound Effects page, Sonic/Shadow/Amy voices), a fixed table that
+  leaves out cue files 11, 12, 18, 19, 31, 32, 35, 38 and 39: files 0-10 are 0-10, 13-17 are
+  11-15, 20-30 are 18-28, 33-34 are 29-30, 36-37 are 31-32. Numbers 16 and 17 play nothing,
+  whatever is in files 18 and 19 (2026-10-18: v6 and v7 put the laugh and "I'm back" there and
+  were silent; v5's 18 and 19 played files 20 and 21). It is not "the empty files are skipped".
 - **Effects and ball:** the E line swaps in csonefftex.pak as Sonic's effect list (SonEff
   0xA08B94) while super. Kind 19 (Sonic_Display) keeps the super textures for the spin ball when
   both texture lists have the same count. That is why Chaos Nazo's ssonictex must stay padded
@@ -55,12 +57,12 @@ Mod order on the phone: Chaos Nazo, Nazo Voices, Nazo, all on. Sora's "Super Son
   2. Convert to mono 22.05 kHz: `ffmpeg -ar 22050`.
   3. Build the bank from the game's own file:
      ```
-     vbank.py <game b03_sne 3.csb> <out 3.csb> 9=homing.wav 13=hurt.wav 18=laugh.wav 19=back.wav 20=yes.wav 21=unreal.wav
+     vbank.py <game b03_sne 3.csb> <out 3.csb> 9=homing.wav 13=hurt.wav 20=laugh.wav 21=back.wav 22=yes.wav 23=unreal.wav 24=death.wav 25=curse.wav
      ```
      The game's file is in the bundle (`voice/game-b03_sne-3.csb`; from the user's phone, do not
   commit it). The bank must stay the game's layout: 40 cues, mono 22.05 kHz. A 5.8 MB bank made
-  from the two-player file was silent. More lines can go into the empty cue files 22-39. Count
-  the numbers the way the game does: a filled cue file stops being skipped.
+  from the two-player file was silent. More lines can go into cue files 26-30, 33, 34, 36 and 37
+  (numbers 24-28, 29, 30, 31, 32; see the table above).
 - **Textures and models:**
   - `pad.py` pads an archive.
   - `chaos.py` and `chaos2.py` are the Chaos Nazo recolour and UV work.
