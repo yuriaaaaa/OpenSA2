@@ -927,7 +927,9 @@ def flash_voice_checks(game, patch, check):
     (the O line's sound function, the ret function standing in, called with ESI 0x3012); the form
     comes at frame 8, the flash is gone at the D line's last frame and cue 19 plays then. Kind 20
     around a ret-shaped function standing in for PlayVoice: a voice number of an N line returns at
-    once with EAX 1 while player 1 is Sonic, others run the function; each number is logged once."""
+    once with EAX 1 while player 1 is Sonic, others run the function; each number is logged once.
+    The d line: cue 20 (ESI 0x3014) plays once as Sonic's action becomes 37 (Action_DeathTransition)
+    and stays 57 (Action_Death), and again at a later death."""
     sym = game.syms
     fb, _ = sym["sa2_guest_fast_base"]
     fn, fsize = sym["sub_7f4700"]
@@ -937,7 +939,7 @@ def flash_voice_checks(game, patch, check):
     v16 = game.b[game.vaddr_to_off(vfn):game.vaddr_to_off(vfn) + 16].hex()
     plan = "\n".join(["opensa2-patch 1", f"G {fb:x} 20000000", "C 1934b70 1de9600 1 5b", "H 42 1",
                       "X 0 1100000 1100100 148 9", f"F {rt:x} 6fe430 {rt:x} 6fe430", "B 200 32",
-                      f"O {rt:x} 6fe430", "D 12 13 3c 40ff60", "N 618 14", f"J {rt:x} 6fe430",
+                      f"O {rt:x} 6fe430", "D 12 13 3c 40ff60", "N 618 14", "d 14", f"J {rt:x} 6fe430",
                       f"W {fn:x} {fsize:x} 12 0 {f16} supermain",
                       f"W {vfn:x} {vsize:x} 14 0 {v16} voice"]) + "\n"
     uc, sc = boot(game, patch, plan.encode())
@@ -977,6 +979,13 @@ def flash_voice_checks(game, patch, check):
         run_function(uc, GAME_BASE + f, STATE, va, 0, limit=400000)
         return bytes(uc.mem_read(STATE, 0x1000))
 
+    cues = []
+
+    def snd(u, a, size, d):
+        esi = u32(bytes(u.mem_read(u.reg_read(UC_ARM64_REG_X0) + 0x8E8, 4)), 0)
+        if 0x3000 <= esi < 0x4000:
+            cues.append(esi)
+    hs = uc.hook_add(UC_HOOK_CODE, snd, begin=GAME_BASE + rt, end=GAME_BASE + rt)
     alphas, forms = [], []
     call(fn, 0x7F4700, press=0x200)
     for t in range(70):
@@ -989,6 +998,14 @@ def flash_voice_checks(game, patch, check):
     check(alphas[-1] == 0 and col == b"\0\0\0\0", f"flash: gone at the end ({alphas[50:62]})")
     said = sc.err.decode()
     check(said.count("is the super form") == 1, "flash: one transformation")
+    check(cues == [0x3012, 0x3013], f"flash: cue 18 as it starts, cue 19 as it ends ({[hex(c) for c in cues]})")
+    cues.clear()
+    for action in (6, 37, 57, 57, 6, 57):
+        uc.mem_write(GUEST + 0x1003000, bytes([action]))
+        call(fn, 0x7F4700)
+    check(cues == [0x3014, 0x3014], f"death: cue 20 once a death, at 37 and again at the next ({[hex(c) for c in cues]})")
+    uc.mem_write(GUEST + 0x1003000, bytes([6]))
+    uc.hook_del(hs)
     s2 = call(vfn, 0x46F1C1, num=0x618)
     check(u32(s2, 0x8A8) == 1 and u32(s2, 0x908) == 0x1F8004, f"voice: voice 1560 for Sonic is the cue (EAX {u32(s2, 0x8A8)})")
     s3 = call(vfn, 0x46F1C1, num=0x619)

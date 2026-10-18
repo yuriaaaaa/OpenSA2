@@ -123,7 +123,7 @@ final class NativePatch {
     static final String RANDOM_ANY_PREF = "swap_random_any", RANDOM_ANY_KEY = "*any*", MOVES_KEY = "*moves*", SUPER_KEY = "*super*",
             TRANSFORM_KEY = "*transform*", SUPER_EFFECTS_KEY = "*supereffects*",
             TRANSFORM_VOICES_KEY = "*transformvoices*", TRANSFORM_FLASH_KEY = "*transformflash*", VOICE_CUES_KEY = "*voicecues*",
-            AURA_KEY = "*aura*", AURA_COLOR_KEY = "*auracolor*";
+            AURA_KEY = "*aura*", AURA_COLOR_KEY = "*auracolor*", DEATH_VOICE_KEY = "*deathvoice*";
     private static final int CHECKPOINT_RECORDS = 0x1934B88;
     /** The game's restart handlers (cases of its GameState switch) keep the character object; the
      * restart-with-reload one fades, tears the stage down and moves to GameState 5 (delete and load
@@ -167,7 +167,8 @@ final class NativePatch {
     /** A mod's own voices for the transformation and in place of game voices, from its mod.ini
      * [OpenSA2] group: TransformVoices=<cue>,<cue> (bank 3 cues: during the flash, after it),
      * TransformFlash=<rrggbb>[,<frames>], VoiceCues=<voice>:<cue>,... (PlayVoice numbers played as a
-     * bank 3 cue while player 1 is Sonic), AuraColor=<rrggbb> (Super Sonic's aura). The first mod
+     * bank 3 cue while player 1 is Sonic), AuraColor=<rrggbb> (Super Sonic's aura), DeathVoice=<cue>
+     * (played as Sonic dies, with the super forms on). The first mod
      * switched on that names each wins. */
     static final int PLAY_SOUND = 0x437260, PLAY_VOICE = 0x443130;
 
@@ -179,11 +180,13 @@ final class NativePatch {
                 if (e.getKey().equalsIgnoreCase("OpenSA2")) g = e.getValue();
             if (g == null) continue;
             String tv = ModManager.get(g, "TransformVoices"), tf = ModManager.get(g, "TransformFlash"),
-                   vc = ModManager.get(g, "VoiceCues"), ac = ModManager.get(g, "AuraColor");
+                   vc = ModManager.get(g, "VoiceCues"), ac = ModManager.get(g, "AuraColor"),
+                   dv = ModManager.get(g, "DeathVoice");
             if (!tv.isEmpty() && !into.containsKey(TRANSFORM_VOICES_KEY)) into.put(TRANSFORM_VOICES_KEY, tv);
             if (!tf.isEmpty() && !into.containsKey(TRANSFORM_FLASH_KEY)) into.put(TRANSFORM_FLASH_KEY, tf);
             if (!vc.isEmpty() && !into.containsKey(VOICE_CUES_KEY)) into.put(VOICE_CUES_KEY, vc);
             if (!ac.isEmpty() && !into.containsKey(AURA_COLOR_KEY)) into.put(AURA_COLOR_KEY, ac);
+            if (!dv.isEmpty() && !into.containsKey(DEATH_VOICE_KEY)) into.put(DEATH_VOICE_KEY, dv);
         }
     }
 
@@ -904,6 +907,12 @@ final class NativePatch {
                         plan.patches++;
                         if (n > 0) plan.said.add("Characters: " + n + " of Sonic's voices are a mod's lines");
                     }
+                }
+                int death = swaps.containsKey(DEATH_VOICE_KEY) ? num(swaps.get(DEATH_VOICE_KEY), 10, -1) : -1;
+                if (death >= 0 && death < 0xFFF && sndf != null) {
+                    if (!transform) b.append(String.format(Locale.ROOT, "O %x %x\n", sndf[0], PLAY_SOUND));
+                    b.append(String.format(Locale.ROOT, "d %x\n", death));
+                    plan.said.add("Characters: a mod's line as Sonic dies (cue " + death + ")");
                 }
                 if ("1".equals(swaps.get(SUPER_EFFECTS_KEY))) {
                     b.append(String.format(Locale.ROOT, "E 0 %x %x %s\n", TEX_SONEFF, SUPER_EFFECTS_NAME_VA, SUPER_EFFECTS_NAME));

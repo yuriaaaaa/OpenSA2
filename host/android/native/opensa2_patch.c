@@ -102,7 +102,8 @@
  * wraps PlayVoice: logs each voice number once, and plays `N <voice> <cue>` cues instead while
  * player 1 is Sonic (needs the J line). Kind 21 wraps Super_DispDelay3 for the super form's aura:
  * `a <index> <off> <va>` lines name the game functions it draws with, `c <CharID2> <rrggbb>` tints
- * a character's aura (needs the J and C lines; below).
+ * a character's aura (needs the J and C lines; below). `d <cue>` (with the O line) plays a
+ * voice cue as Sonic dies, from kind 18.
  *
  * `e <off> <target va> <source va>` lines are fixes to the game itself, not patches: each names
  * a row of the runtime's missing-block edge table (runtime/remill_runtime.h, sa2_mb_edge) whose
@@ -441,6 +442,9 @@ static uint32_t g_snd_va;
  * another as it ends; the form changes a few frames in, at the flash's brightest. */
 static uint32_t g_v_cue1 = 0xFFFFFFFFu, g_v_cue2 = 0xFFFFFFFFu, g_v_frames, g_v_rgb;
 static uint32_t g_tr_t[2], g_fade_ours;
+/* d line, `d <cue>`: a voice cue played as Sonic (CharID2 0) dies, when his action becomes
+ * Action_DeathTransition (37, queued up by KillPlayer) or Action_Death (57); once a death. */
+static uint32_t g_death_cue = 0xFFFFFFFFu, g_dead[2];
 #define SP_FADE 0x171CDA0u
 /* N lines (kind 20, around PlayVoice): while player 1 is Sonic's CharID2 (0), these voice numbers
  * play a cue of the voice bank instead (a mod's own lines for its character); every voice number
@@ -623,6 +627,8 @@ static void parse_plan(const char *p) {
                 g_snd_off = a;
                 g_snd_va = (uint32_t)b;
             }
+        } else if (t == 'd') {
+            if (parse_hex(&s, &a) && a < 0xFFF) g_death_cue = (uint32_t)a;
         } else if (t == 'D') {
             if (parse_hex(&s, &a) && parse_hex(&s, &b) && parse_hex(&s, &c) && parse_hex(&s, &d) && c < 1200) {
                 g_v_cue1 = (uint32_t)a;
@@ -1898,6 +1904,14 @@ static void *wrap_supermain(wrap_t *w, void *state, uint32_t pc, void *memory) {
                 g_sp_co2[p] = 0;
                 if (g_tr_t[p] && g_ok(SP_FADE, 4) && g_rd32(g, SP_FADE) == g_fade_ours) g_wr32(g, SP_FADE, 0);
                 g_tr_t[p] = 0;
+            }
+            if (g_death_cue != 0xFFFFFFFFu && g[co2 + g_charid_off + 2] == 0 && g_ok(SP_CHAROBJ1 + 4 * (uint32_t)p, 4)) {
+                uint32_t e1 = g_rd32(g, SP_CHAROBJ1 + 4 * (uint32_t)p);
+                if (e1 && g_ok(e1, 1)) {
+                    int dying = g[e1] == 37 || g[e1] == 57;   /* Action_DeathTransition, Action_Death */
+                    if (dying && !g_dead[p]) play_cue(state, memory, g_death_cue);
+                    g_dead[p] = (uint32_t)dying;
+                }
             }
             if (g_sp_failed[p] == co2) continue;
             uint32_t id2 = g[co2 + g_charid_off + 2];

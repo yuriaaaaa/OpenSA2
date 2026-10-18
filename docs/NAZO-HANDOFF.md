@@ -2,7 +2,7 @@
 
 Read this first, then `docs/HANDOFF.md` (the whole Android port) and the last sessions of
 `docs/android-session-2026-10-15.md`. The repo is github.com/yuriaaaaa/OpenSA2, branch
-`claude/project-thread-lpzylp`; the Android app is at 0.1.23. Keep the rules in HANDOFF.md
+`claude/project-thread-lpzylp`; the Android app is at 0.1.24. Keep the rules in HANDOFF.md
 section 2 (source-only repo, `tools/public_check.py` before commits, no attribution trailers, the
 mods and the game's files stay out of git).
 
@@ -15,7 +15,7 @@ OpenSA2 0.1.21:
 |---|---|---|
 | Nazo (no Seelkadoom) | v3 | KyronSaif/Sonicgamer11's Nazo over Sonic, with Wrath of Nazo as the alt costume. `sonicmdl/` and `sonic1mdl/` model folders. sonictex/sonic1tex are padded to 48 textures (the mod's models name textures 9, 10 and 37, and the archive past 9 crashed City Escape's start). s_efftex is recoloured silver (Nazo's spin and dash effects). |
 | Chaos Nazo | v4 | The super form. `ssonicmdl/` holds Nazo's body as model 328 with rewritten UVs. `PRS/ssonictex.pak` has green fur, yellow eyes, a purple gem, white gloves with gold cuffs, black/purple/gold shoes and a green-and-black ball; it is padded to 48 with the same texture names as Nazo's sonictex. `PRS/csonefftex.pak` holds the light-green effects. |
-| Nazo Voices | v6 | `MPB/b03_sne/3.csb`: the game's own one-player voice bank with cue files 9 (homing "hmmph"), 13 (hurt "No!"), 18 (laugh), 19 ("I'm back"), 20 ("Yes"), 21 ("Completely unreal"). Its mod.ini `[OpenSA2]` group sets `TransformVoices=16,17`, `TransformFlash=40FF60,226` and `VoiceCues=1541:18,1543:18,1545:19`. |
+| Nazo Voices | v7 | `MPB/b03_sne/3.csb`: the game's own one-player voice bank with cue files 9 (homing "hmmph"), 13 (hurt "No!"), 18 (laugh), 19 ("I'm back"), 20 ("Yes"), 21 ("Completely unreal") and 22 (death roar). Its mod.ini `[OpenSA2]` group sets `TransformVoices=16,17`, `TransformFlash=40FF60,302` (the flash as long as the laugh), `DeathVoice=20` and `VoiceCues=1541:18,1543:18,1545:19`. |
 
 Mod order on the phone: Chaos Nazo, Nazo Voices, Nazo, all on. Sora's "Super Sonic / Shadow"
 (DLL) mod and the original "Nazo & Seelkadoom" mod must be off. On the Characters screen, tick
@@ -100,7 +100,7 @@ Mod order on the phone: Chaos Nazo, Nazo Voices, Nazo, all on. Sora's "Super Son
 4. The aura: done in 0.1.22 (above). If it looks wrong on the phone, the Super aura switch turns
    it off; game.log's `aura:` lines say whether it was drawn.
 5. Build an APK only for helper or launcher changes: HANDOFF.md section 3. Bump the version to
-   the next (0.1.24 / 12500). Use the same keystore. Run the emulator tests (`emu_patch_helper.py`, must end
+   the next (0.1.25 / 12600). Use the same keystore. Run the emulator tests (`emu_patch_helper.py`, must end
    ALL PASS), then deliver as 28 MiB 7z parts.
 
 ## Credits to keep in the mod.ini files
