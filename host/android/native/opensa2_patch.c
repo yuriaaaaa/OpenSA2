@@ -100,7 +100,9 @@
  * transforms and plays two voice-bank cues through `O <PlaySoundProbably off> <va>`; `E <CharID2>
  * <texture list va> <name va> <name>` stands a mod's effect texture list in while super. Kind 20
  * wraps PlayVoice: logs each voice number once, and plays `N <voice> <cue>` cues instead while
- * player 1 is Sonic (needs the J line).
+ * player 1 is Sonic (needs the J line). Kind 21 wraps Super_DispDelay3 for the super form's aura:
+ * `a <index> <off> <va>` lines name the game functions it draws with, `c <CharID2> <rrggbb>` tints
+ * a character's aura (needs the J and C lines; below).
  */
 #include <stddef.h>
 #include <stdint.h>
@@ -320,7 +322,7 @@ typedef struct {
     uint64_t from;          /* the wrapped function's offset (kind 16's Q lines) */
 } wrap_t;
 
-enum { WRAP_LAYOUT = 3, WRAP_TRACE = 4, WRAP_SPRITE = 5, WRAP_DISPATCH = 6, WRAP_PTR = 7, WRAP_GATE = 8, WRAP_FILL = 9, WRAP_RANDOM = 10, WRAP_MOVES = 11, WRAP_RESTART = 12, WRAP_SETLOAD = 13, WRAP_LEVELGATE = 14, WRAP_TEXSWAP = 15, WRAP_POSTSTORE = 16, WRAP_CHARGATE = 17, WRAP_SUPERMAIN = 18, WRAP_SUPERDISP = 19, WRAP_VOICE = 20 };
+enum { WRAP_LAYOUT = 3, WRAP_TRACE = 4, WRAP_SPRITE = 5, WRAP_DISPATCH = 6, WRAP_PTR = 7, WRAP_GATE = 8, WRAP_FILL = 9, WRAP_RANDOM = 10, WRAP_MOVES = 11, WRAP_RESTART = 12, WRAP_SETLOAD = 13, WRAP_LEVELGATE = 14, WRAP_TEXSWAP = 15, WRAP_POSTSTORE = 16, WRAP_CHARGATE = 17, WRAP_SUPERMAIN = 18, WRAP_SUPERDISP = 19, WRAP_VOICE = 20, WRAP_AURA = 21 };
 #define TRACE_EARLY 16
 #define TRACE_LATE 48
 #define TRACE_LATER_MS 4000
@@ -437,6 +439,18 @@ static uint32_t g_tr_t[2], g_fade_ours;
 #define MAX_N 16
 static uint32_t g_n_num[MAX_N], g_n_cue[MAX_N], g_nn;
 static uint32_t g_vlog[64], g_nvlog;
+/* a lines (kind 21): the super aura's game functions, `a <index> <off> <va>` in the order of the
+ * AU_ enum below (the display it is drawn in, Super_DispDelay3, and ProcessChunkModel need only
+ * their guest address); c lines, `c <CharID2> <rrggbb>`: that character's aura tinted so (a
+ * constant material). g_au_live once the kind-21 wrapper is in place; per player the character
+ * task given the display, the DisplaySub_Delayed4 it had, the aura's frame count and whether its
+ * textures were loaded for the character object. */
+enum { AU_DISPLAY, AU_LOADTEX, AU_TRANSLATE, AU_ROTX, AU_ROTY, AU_ROTZ, AU_SCALE, AU_RESETSPACE, AU_DRAW,
+       AU_SAVE3D, AU_LOAD3D, AU_ON3D, AU_MATERIAL, AU_RESETMAT, AU_CALLBACK, AU_FNS };
+static uint64_t g_au_off[AU_FNS];
+static uint32_t g_au_va[AU_FNS];
+static uint32_t g_au_cid[2], g_au_rgb[2], g_nau_c;
+static uint32_t g_au_live, g_au_obj[2], g_au_old[2], g_au_tick[2], g_au_tex[2], g_au_said[2];
 /* Kind 19: whether two texture lists are the same textures in the same order (by name), so the
  * super form's list can draw what the old one would (the ball): asked once per pair. */
 static uint32_t g_par_a[2], g_par_b[2], g_par_r[2];
@@ -499,7 +513,7 @@ static void parse_plan(const char *p) {
                 if (!parse_hex(&s, &r->to) || !parse_hex(&s, &r->to_va)) continue;
             } else {
                 if (!parse_hex(&s, &r->wrap_kind) || !parse_hex(&s, &r->preg)) continue;
-                if (r->wrap_kind > WRAP_VOICE) continue;
+                if (r->wrap_kind > WRAP_AURA) continue;
                 if (r->wrap_kind == WRAP_PTR ? (r->preg > 0x1FFF || (r->preg & 0xFFF) > 0x9F0) : r->preg > 0x9F0) continue;
                 if ((r->wrap_kind <= 2 || (r->wrap_kind == WRAP_PTR && (r->preg & 0xFFF) >= 0x800)) && (r->preg & 3)) continue;
             }
@@ -600,6 +614,17 @@ static void parse_plan(const char *p) {
                 g_v_cue2 = (uint32_t)b;
                 g_v_frames = (uint32_t)c;
                 g_v_rgb = (uint32_t)d & 0xFFFFFF;
+            }
+        } else if (t == 'a') {
+            if (parse_hex(&s, &a) && parse_hex(&s, &b) && parse_hex(&s, &c) && a < AU_FNS) {
+                g_au_off[a] = b;
+                g_au_va[a] = (uint32_t)c;
+            }
+        } else if (t == 'c') {
+            if (parse_hex(&s, &a) && parse_hex(&s, &b) && a < 0x100 && g_nau_c < 2) {
+                g_au_cid[g_nau_c] = (uint32_t)a;
+                g_au_rgb[g_nau_c] = (uint32_t)b & 0xFFFFFF;
+                g_nau_c++;
             }
         } else if (t == 'N') {
             if (parse_hex(&s, &a) && parse_hex(&s, &b) && g_nn < MAX_N) {
@@ -1474,6 +1499,28 @@ static void play_cue(void *state, void *memory, uint32_t cue) {
     guest_call_args(state, memory, g_snd_off, g_snd_va, 0x3000 + cue, zero, 3);
 }
 
+/* As guest_call, with EAX, EBX, ECX and EDX set and up to four 32-bit arguments pushed (the
+ * caller's to pop). */
+static uint32_t guest_call_regs(void *state, void *memory, uint64_t off, uint32_t va, uint32_t eax, uint32_t ebx,
+                                uint32_t ecx, uint32_t edx, const uint32_t *args, int nargs) {
+    uint8_t *g = guest();
+    uint8_t *st = (uint8_t *)state;
+    uint32_t esp = *(uint32_t *)(st + 0x908) - 4 * (uint32_t)(nargs + 1);
+    if (nargs > 4 || !g_ok(esp, 4 * (uint32_t)(nargs + 1))) return 0;
+    for (int i = 0; i < 0x400; i++) g_callsave[i] = st[0x800 + i];
+    g_wr32(g, esp, 0x401234);
+    for (int i = 0; i < nargs; i++) g_wr32(g, esp + 4 + 4 * (uint32_t)i, args[i]);
+    *(uint32_t *)(st + 0x908) = esp;
+    *(uint32_t *)(st + 0x8A8) = eax;
+    *(uint32_t *)(st + 0x8B8) = ebx;
+    *(uint32_t *)(st + 0x8C8) = ecx;
+    *(uint32_t *)(st + 0x8D8) = edx;
+    ((lifted_fn)(g_base + off))(state, va, memory);
+    uint32_t r = *(uint32_t *)(st + 0x8A8);
+    for (int i = 0; i < 0x400; i++) st[0x800 + i] = g_callsave[i];
+    return r;
+}
+
 /* Kind 18, around Sonic_Main (Sonic's and Shadow's): Sonic and Shadow (the X lines' CharID2) become
  * their super forms as Sora's SA2 Super Sonic does it on transforming, outside Final Hazard (H set
  * 1): the game's super model (LoadMDLFile of SSONICMDL.PRS, index 328; SSHADOWMDL.PRS, 355) put in
@@ -1492,6 +1539,175 @@ static void play_cue(void *state, void *memory, uint32_t cue) {
 #define SP_MODELS 0x1DE9620u
 #define SP_PHYSICS 0x17391E8u
 #define SP_INVINCIBLE 0x8000u
+
+/* The super aura (a lines, c lines, kind 21). Final Hazard's Super Sonic and Super Shadow glow: a
+ * model of the game's (0x0170B47C) over the SSONEFFTEX textures (0x0170ACD4; LoadSuperSonic loads
+ * them with LoadTextureList from the name at 0x008BAA1C), its texture number (0x0170ACEE) cycling
+ * through 3-8 for Sonic and 9-14 for Shadow. The game draws it only in Final Hazard, from
+ * Super_DispDelay3 (0x0049CD50), which reads Final Hazard's data (FinalHazardPlayerData, null
+ * elsewhere) and SuperSonicCharObj2. Here, as Sora's SA2 Super Sonic does it, the super form's
+ * task gets Super_DispDelay3 as its DisplaySub_Delayed4 while it is the super form; outside Final
+ * Hazard (H set 1) the kind-21 wrapper draws the aura itself through the game's own Ninja calls and
+ * returns without the game's body: at the character's position, turned as it is (Z, X, then
+ * 0x8000 - Y) and scaled, 3 units down, with a c line's colour as a constant material. */
+#define AU_MAINCHAR 0x1DEA6E0u
+#define AU_TEXLIST 0x170ACD4u
+#define AU_TEXNAME 0x8BAA1Cu
+#define AU_MODEL 0x170B47Cu
+#define AU_ANIM 0x170ACEEu
+#define AU_MATRIX 0x1A557FCu       /* _nj_current_matrix_ptr_ */
+#define AU_MATRIX_MAX 0x2670588u   /* MatrixStack_MaxPtr */
+#define AU_RENDER 0x2670544u       /* pRenderInfo: +0x20 the texture list in use */
+#define AU_CONSTANT_MATERIAL 0x10u /* NJD_CONTROL_3D_CONSTANT_MATERIAL */
+
+static int aura_ready(void) {
+    for (int i = 0; i < AU_FNS; i++)
+        if (!g_au_va[i] || (!g_au_off[i] && i != AU_DISPLAY && i != AU_CALLBACK)) return 0;
+    return 1;
+}
+
+static void au_call(void *state, void *memory, int fn, uint32_t eax, uint32_t ebx, const uint32_t *args, int nargs) {
+    guest_call_regs(state, memory, g_au_off[fn], g_au_va[fn], eax, ebx, 0, 0, args, nargs);
+}
+
+/* With the super textures: SSONEFFTEX, once per character object (as Sora's mod loads it with
+ * each LoadSonic). */
+static void aura_load(void *state, void *memory, int p) {
+    g_au_tex[p] = 0;
+    if (!g_au_live || !aura_ready()) return;
+    guest_call_regs(state, memory, g_au_off[AU_LOADTEX], g_au_va[AU_LOADTEX], 0, 0, AU_TEXNAME, AU_TEXLIST, 0, 0);
+    g_au_tex[p] = 1;
+}
+
+/* On the super form: its task draws the aura (DisplaySub_Delayed4, +0x28; the task's Data2, +0x40,
+ * is the character object). */
+static void aura_on(uint8_t *g, int p, uint32_t co2) {
+    g_au_obj[p] = 0;
+    if (!g_au_live || !g_au_tex[p] || !g_ok(AU_MAINCHAR + 4 * (uint32_t)p, 4)) return;
+    uint32_t obj = g_rd32(g, AU_MAINCHAR + 4 * (uint32_t)p);
+    if (!obj || !g_ok(obj, 0x44) || g_rd32(g, obj + 0x40) != co2) return;
+    uint32_t cur = g_rd32(g, obj + 0x28);
+    g_au_old[p] = cur == g_au_va[AU_DISPLAY] ? 0 : cur;
+    g_wr32(g, obj + 0x28, g_au_va[AU_DISPLAY]);
+    g_au_obj[p] = obj;
+    g_au_said[p] = 0;
+}
+
+/* Off again: the task's own DisplaySub_Delayed4, when it is still that character's task and still
+ * has ours. */
+static void aura_off(uint8_t *g, int p, uint32_t co2) {
+    uint32_t obj = g_au_obj[p];
+    g_au_obj[p] = 0;
+    if (!obj || !g_ok(AU_MAINCHAR + 4 * (uint32_t)p, 4) || g_rd32(g, AU_MAINCHAR + 4 * (uint32_t)p) != obj ||
+        !g_ok(obj, 0x44) || g_rd32(g, obj + 0x40) != co2 || g_rd32(g, obj + 0x28) != g_au_va[AU_DISPLAY])
+        return;
+    g_wr32(g, obj + 0x28, g_au_old[p]);
+}
+
+static void aura_draw(void *state, void *memory, uint8_t *g, int p, uint32_t obj, uint32_t co2) {
+    uint32_t d1 = g_rd32(g, obj + 0x34);
+    if (!d1 || !g_ok(d1, 0x2C) || !g_ok(co2 + g_charid_off + 2, 1) || !g_ok(co2 + 0x178, 2)) return;
+    if (g_rd16(g, co2 + 0x176) == 54 || g_rd16(g, co2 + 0x178) == 54) return;   /* the stage's end */
+    if (!g_ok(AU_RENDER, 4) || !g_ok(AU_MATRIX, 4) || !g_ok(AU_MATRIX_MAX, 4) || !g_ok(AU_ANIM, 1) ||
+        !g_ok(AU_TEXLIST, 8))
+        return;
+    uint32_t ri = g_rd32(g, AU_RENDER), m = g_rd32(g, AU_MATRIX), top = g_rd32(g, AU_MATRIX_MAX);
+    if (!g_ok(ri + 0x20, 4) || !g_ok(m, 0x90) || m + 0x90 > top) return;   /* room for two pushes */
+    uint32_t id2 = g[co2 + g_charid_off + 2], base = id2 == 1 ? 9 : 3;
+    uint32_t n = base + g_au_tick[p] % 6;
+    if (g_ok(SP_GAMESTATE, 2) && g_rd16(g, SP_GAMESTATE) == 16) g_au_tick[p]++;
+    uint32_t tl = g_rd32(g, AU_TEXLIST), tn = g_rd32(g, AU_TEXLIST + 4);
+    if (tn <= base + 5 || tn > 256 || !g_ok(tl, 12 * tn) || !g_rd32(g, tl + 12 * n + 8)) {
+        if (!g_au_said[p]) {
+            g_au_said[p] = 1;
+            say("aura: SSONEFFTEX is not loaded; no aura");
+        }
+        return;
+    }
+    int tint = 0;
+    uint32_t rgb = 0;
+    for (uint32_t i = 0; i < g_nau_c; i++)
+        if (g_au_cid[i] == id2) {
+            tint = 1;
+            rgb = g_au_rgb[i];
+        }
+    if (!g_au_said[p]) {
+        g_au_said[p] = 1;
+        begin();
+        put("aura: player ");
+        put_dec((uint64_t)p);
+        put(" glows");
+        if (tint) {
+            put(", tinted ");
+            put_hex(rgb);
+        }
+        end();
+    }
+    uint32_t oldtex = g_rd32(g, ri + 0x20), oldanim = g[AU_ANIM];
+    g_wr32(g, ri + 0x20, AU_TEXLIST);
+    g[AU_ANIM] = (uint8_t)n;
+    for (uint32_t i = 0; i < 0x30; i++) g[m + 0x30 + i] = g[m + i];   /* njPushMatrix */
+    g_wr32(g, AU_MATRIX, m + 0x30);
+    uint32_t v[4] = {g_rd32(g, d1 + 0x14), g_rd32(g, d1 + 0x18), g_rd32(g, d1 + 0x1C), 0};
+    au_call(state, memory, AU_TRANSLATE, m + 0x30, 0, v, 3);
+    au_call(state, memory, AU_RESETSPACE, 0, 0, 0, 0);
+    v[0] = g_rd32(g, d1 + 0x10);
+    au_call(state, memory, AU_ROTZ, 0, m + 0x30, v, 1);
+    v[0] = g_rd32(g, d1 + 0x08);
+    au_call(state, memory, AU_ROTX, 0, m + 0x30, v, 1);
+    v[0] = 0x8000u - g_rd32(g, d1 + 0x0C);
+    au_call(state, memory, AU_ROTY, 0, m + 0x30, v, 1);
+    v[0] = g_rd32(g, d1 + 0x20);
+    v[1] = g_rd32(g, d1 + 0x24);
+    v[2] = g_rd32(g, d1 + 0x28);
+    au_call(state, memory, AU_SCALE, 0, 0, v, 3);
+    for (uint32_t i = 0; i < 0x30; i++) g[m + 0x60 + i] = g[m + 0x30 + i];
+    g_wr32(g, AU_MATRIX, m + 0x60);
+    v[0] = 0;
+    v[1] = b_of(-3.0f);
+    v[2] = 0;
+    au_call(state, memory, AU_TRANSLATE, m + 0x60, 0, v, 3);
+    au_call(state, memory, AU_RESETSPACE, 0, 0, 0, 0);
+    if (tint) {
+        au_call(state, memory, AU_SAVE3D, 0, 0, 0, 0);
+        au_call(state, memory, AU_ON3D, AU_CONSTANT_MATERIAL, 0, 0, 0);
+        v[0] = b_of(1.0f);
+        v[1] = b_of((float)(rgb >> 16 & 0xFF) / 255.0f);
+        v[2] = b_of((float)(rgb >> 8 & 0xFF) / 255.0f);
+        v[3] = b_of((float)(rgb & 0xFF) / 255.0f);
+        au_call(state, memory, AU_MATERIAL, 0, 0, v, 4);
+    }
+    v[0] = AU_MODEL;
+    v[1] = g_au_va[AU_CALLBACK];
+    au_call(state, memory, AU_DRAW, 0, 0, v, 2);
+    if (tint) {
+        au_call(state, memory, AU_RESETMAT, 0, 0, 0, 0);
+        au_call(state, memory, AU_LOAD3D, 0, 0, 0, 0);
+    }
+    g_wr32(g, AU_MATRIX, m);   /* njPopMatrix(2) */
+    g[AU_ANIM] = (uint8_t)oldanim;
+    g_wr32(g, ri + 0x20, oldtex);
+}
+
+/* Kind 21, around Super_DispDelay3 (the task on the stack): in Final Hazard the game's own;
+ * elsewhere the aura for a player's super form whose task it is, and nothing for anything else
+ * (the game's body would read Final Hazard's data, which is null there). */
+static void *wrap_aura(wrap_t *w, void *state, uint32_t pc, void *memory) {
+    uint8_t *g = guest();
+    uint8_t *st = (uint8_t *)state;
+    if (!g || !g_guest_size || !g_ok(g_level_va, 2)) return w->orig(state, pc, memory);
+    uint32_t level = g_rd16(g, g_level_va);
+    for (int i = 0; i < g_nhlevel; i++)
+        if (g_hlevel[i] == level && g_hset[i] == 1) return w->orig(state, pc, memory);
+    uint32_t esp = *(uint32_t *)(st + 0x908);
+    uint32_t obj = g_ok(esp, 8) ? g_rd32(g, esp + 4) : 0;
+    for (int p = 0; p < 2 && obj; p++) {
+        uint32_t co2 = g_sp_co2[p];
+        if (obj != g_au_obj[p] || !g_sp_on[p] || !co2 || !g_ok(obj, 0x44) || g_rd32(g, obj + 0x40) != co2) continue;
+        aura_draw(state, memory, g, p, obj, co2);
+    }
+    return ((lifted_fn)(g_base + g_ret_off))(state, g_ret_va, memory);
+}
 
 /* Loads the super model and textures for player p's character object; 0 when they did not load. */
 static int super_load(void *state, void *memory, uint8_t *g, int p, uint32_t co2, int k) {
@@ -1548,6 +1764,7 @@ static int super_load(void *state, void *memory, uint8_t *g, int p, uint32_t co2
             end();
         }
     }
+    aura_load(state, memory, p);
     begin();
     put("super: player ");
     put_dec((uint64_t)p);
@@ -1607,6 +1824,7 @@ static void super_on(uint8_t *g, int p, uint32_t co2, int k) {
         g_wr32(g, g_e_list + 4, g_rd32(g, g_e_tex[p] + 4));
         g_e_on[p] = 1;
     }
+    aura_on(g, p, co2);
     g_sp_on[p] = 1;
     g_par_a[p] = g_par_b[p] = 0;   /* kind 19 looks at the two lists again */
     begin();
@@ -1619,6 +1837,7 @@ static void super_on(uint8_t *g, int p, uint32_t co2, int k) {
 /* Back from the super form; `gone` when the character object is no more (only the shared
  * animation list is put back). */
 static void super_off(uint8_t *g, int p, uint32_t co2, int gone) {
+    aura_off(g, p, co2);
     if (g_sp_list[p]) super_list_set(g, g_sp_list[p], g_sp_idx[p], g_sp_best[p]);
     g_sp_list[p] = 0;
     g_sp_on[p] = 0;
@@ -1858,6 +2077,7 @@ static void *wrap_common(int slot, void *state, uint32_t pc, void *memory) {
     case WRAP_SUPERMAIN: return wrap_supermain(w, state, pc, memory);
     case WRAP_SUPERDISP: return wrap_superdisp(w, state, pc, memory);
     case WRAP_VOICE: return wrap_voice(w, state, pc, memory);
+    case WRAP_AURA: return wrap_aura(w, state, pc, memory);
     default: break;
     }
     uint8_t *g = guest();
@@ -2101,6 +2321,7 @@ static void apply(uintptr_t base, uint64_t psize) {
             else if (r->wrap_kind == WRAP_SUPERMAIN) known = known && g_level_va && g_co2_va && ((g_nx && g_mdlfn_off && g_texfn_off) || g_em_off);
             else if (r->wrap_kind == WRAP_SUPERDISP) known = known && g_nx;
             else if (r->wrap_kind == WRAP_VOICE) known = known && g_co2_va && (!g_nn || (g_ret_off && g_snd_off));
+            else if (r->wrap_kind == WRAP_AURA) known = known && g_level_va && g_ret_off && g_nx && aura_ready();
             if (r->wrap_kind == WRAP_RANDOM) {
                 uint32_t grp = (uint32_t)r->preg & 3, va = 0;
                 for (int z = 0; z < g_nz; z++)
@@ -2197,6 +2418,7 @@ static void apply(uintptr_t base, uint64_t psize) {
         sync_code(at, at + 16);
         sys_mprotect(p0, p1 - p0, PROT_READ | PROT_EXEC);
         done++;
+        if (r->type == KIND_WRAP && r->wrap_kind == WRAP_AURA) g_au_live = 1;
         begin();
         put("applied ");
         put(r->label);

@@ -54,6 +54,10 @@ public class CharactersActivity extends Activity {
                 + "he laughs). Not in Final Hazard.",
                 p.getBoolean(NativePatch.TRANSFORM_PREF, true),
                 on -> p.edit().putBoolean(NativePatch.TRANSFORM_PREF, on).apply()));
+        col.addView(Ui.check(this, "Super aura: Super Sonic and Super Shadow glow as they do in Final Hazard (a mod can "
+                + "colour it: Chaos Nazo's is green)",
+                p.getBoolean(NativePatch.AURA_PREF, true),
+                on -> p.edit().putBoolean(NativePatch.AURA_PREF, on).apply()));
         col.addView(Ui.check(this, "Always super: Sonic and Shadow are Super Sonic and Super Shadow from the start of every "
                 + "stage, with no rings needed (test; overrides the transformation)",
                 p.getBoolean(NativePatch.SUPER_PREF, false),

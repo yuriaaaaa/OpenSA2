@@ -2,7 +2,7 @@
 
 Read this first, then `docs/HANDOFF.md` (the whole Android port) and the last sessions of
 `docs/android-session-2026-10-15.md`. The repo is github.com/yuriaaaaa/OpenSA2, branch
-`claude/project-thread-lpzylp`; the Android app is at 0.1.21. Keep the rules in HANDOFF.md
+`claude/project-thread-lpzylp`; the Android app is at 0.1.22. Keep the rules in HANDOFF.md
 section 2 (source-only repo, `tools/public_check.py` before commits, no attribution trailers, the
 mods and the game's files stay out of git).
 
@@ -81,8 +81,11 @@ Mod order on the phone: Chaos Nazo, Nazo Voices, Nazo, all on. Sora's "Super Son
      the laugh during the green flash, then "I'm back" as it ends.
   2. Normal Nazo's spin aura silver, Chaos Nazo's green. Nazo v3 and Chaos Nazo v4 do this; not
      yet seen on the phone.
-  3. A green aura around Chaos Nazo. Not started. Sora's SA2-Super-Sonic draws its aura models
-     with ss_efftex in a task of its own. Use it as a reference only; do not copy its code.
+  3. A green aura around Chaos Nazo. Done in 0.1.22 (2026-10-18), not yet seen on the phone:
+     the game's own Final Hazard aura (model 0x0170B47C over SSONEFFTEX) drawn around the super
+     form in every stage, tinted by Chaos Nazo's mod.ini `[OpenSA2] AuraColor=40FF60` (Chaos Nazo
+     v5). The Characters screen has a "Super aura" switch. Sora's SA2-Super-Sonic was the
+     reference for where and how the aura is drawn; no code of it is used.
 
 ## Next steps for Sunday
 
@@ -94,7 +97,8 @@ Mod order on the phone: Chaos Nazo, Nazo Voices, Nazo, all on. Sora's "Super Son
    that.
 3. If hurt does not say "No", check which cue the game plays for damage (the doc lists Sonic
    Damage as file 13).
-4. The aura (kind 18 could load and draw a model each frame; or swap more effect textures).
+4. The aura: done in 0.1.22 (above). If it looks wrong on the phone, the Super aura switch turns
+   it off; game.log's `aura:` lines say whether it was drawn.
 5. Build an APK only for helper or launcher changes: HANDOFF.md section 3. Bump the version to
    0.1.22 / 12300. Use the same keystore. Run the emulator tests (`emu_patch_helper.py`, must end
    ALL PASS), then deliver as 28 MiB 7z parts.

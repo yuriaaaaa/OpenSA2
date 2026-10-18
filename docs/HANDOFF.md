@@ -41,7 +41,7 @@ with an aarch64 Android target (for the helper), Java 17+, Python 3 with `unicor
 
 ```bash
 # APK (the version name/code defaults live in build_apk.py; bump them each release:
-#      0.1.21-opensa2 / 12200 now, next 0.1.22-opensa2 / 12300)
+#      0.1.22-opensa2 / 12300 now, next 0.1.23-opensa2 / 12400)
 python3 tools/opensa2_android/build_apk.py \
   --release-apk <OpenSA2-v0.1.0-alpha.1-android-arm64.apk> \
   --sdk <android-sdk> --sdl <SDL3-3.4.16> \
@@ -135,6 +135,7 @@ Check before adding one: a clash (I once reused `V`) silently breaks other featu
 | 0.1.19 | Transformation: Y in a jump with 50 rings, a ring a second, back at none or on Y; super physics and invincibility. |
 | 0.1.21 | Speed characters and walkers in the hunting stages get the emerald manager (no radar) and the vanilla layout, not the SA2 Randomizer's (its goal ring at the start); kind 19 decides by count when texture names cannot be read. |
 | 0.1.20 | Transformation flash (ScreenFadeARGB) and a mod's voice cues; voice-number log and mod voice mapping (kind 20); a mod's super effect textures (csonefftex); the ball keeps the super textures when the lists match; Always super moved to a new setting. |
+| 0.1.22 | The super aura: Final Hazard's glow around Super Sonic and Super Shadow in every stage (kind 21 around Super_DispDelay3, a and c lines), a "Super aura" setting (on), and a mod's `AuraColor=<rrggbb>` tinting Super Sonic's (Chaos Nazo: green). |
 
 ## 6. Debugging record (the causes found)
 
@@ -201,8 +202,9 @@ which are the trick lines is not known yet.
    to the trick ("Yes") and awesome-rank ("Completely unreal") numbers.
 3. **Check the transformation on the phone**: the flash, the laugh during it and "I'm back" after;
    Chaos Nazo's green ball and light-green effects (needs the Nazo mod on for the ball).
-4. **The green aura** around Chaos Nazo (Sora's mod draws its own aura models with ss_efftex in a
-   task; not done).
+4. **The green aura** around Chaos Nazo: done in 0.1.22 (Final Hazard's aura, drawn by the
+   helper outside it; Chaos Nazo's mod.ini `[OpenSA2] AuraColor=40FF60`). Not yet seen on the
+   phone; the session log says `aura: player 0 glows, tinted 0x40ff60` when it is drawn.
 5. **Voices did not play in 0.1.20** (laugh, "I'm back", homing, hurt): the bank v2 was 5.8 MB
    (the game's one-player bank is 78 KB) and its @UTF tables had 1 in the first header field where
    CRI's have 0. Nazo Voices v3: field 0, every element cut to the samples it plays, our clips at

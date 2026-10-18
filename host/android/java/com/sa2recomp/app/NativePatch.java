@@ -122,7 +122,8 @@ final class NativePatch {
     /** With random on: anyone may turn up in a speed stage (the speed group draws from all twelve). */
     static final String RANDOM_ANY_PREF = "swap_random_any", RANDOM_ANY_KEY = "*any*", MOVES_KEY = "*moves*", SUPER_KEY = "*super*",
             TRANSFORM_KEY = "*transform*", SUPER_EFFECTS_KEY = "*supereffects*",
-            TRANSFORM_VOICES_KEY = "*transformvoices*", TRANSFORM_FLASH_KEY = "*transformflash*", VOICE_CUES_KEY = "*voicecues*";
+            TRANSFORM_VOICES_KEY = "*transformvoices*", TRANSFORM_FLASH_KEY = "*transformflash*", VOICE_CUES_KEY = "*voicecues*",
+            AURA_KEY = "*aura*", AURA_COLOR_KEY = "*auracolor*";
     private static final int CHECKPOINT_RECORDS = 0x1934B88;
     /** The game's restart handlers (cases of its GameState switch) keep the character object; the
      * restart-with-reload one fades, tears the stage down and moves to GameState 5 (delete and load
@@ -150,11 +151,24 @@ final class NativePatch {
      * before .rsrc at 0x02671000), since no game string names it. */
     static final String SUPER_EFFECTS_PAK = "csonefftex.pak", SUPER_EFFECTS_NAME = "CSONEFFTEX";
     private static final int SUPER_EFFECTS_NAME_VA = 0x2670E00;
+    /** The super forms' aura (on by default): Final Hazard's glow, which the game draws only there
+     * (Super_DispDelay3, 0x0049CD50, which reads Final Hazard's data). The helper gives the super
+     * form's task that display as its DisplaySub_Delayed4 and, outside Final Hazard, draws the aura
+     * itself through these game functions (a lines, in this order): the display, LoadTextureList,
+     * njTranslate, njRotateX, njRotateY, njRotateZ, njScale, ResetRenderSpace,
+     * ProcessChunkModelsWithCallback, SaveControl3D, LoadControl3D, OnControl3D, SetMaterial,
+     * ResetMaterial and ProcessChunkModel. A mod's [OpenSA2] AuraColor=<rrggbb> tints Super
+     * Sonic's (the c line). */
+    static final String AURA_PREF = "super_aura";
+    private static final int AURA_DISPLAY = 0x49CD50;
+    private static final int[] AURA_FNS = {AURA_DISPLAY, 0x44C350, 0x427470, 0x4274E0, 0x4275B0, 0x427680, 0x427750,
+            0x42D340, 0x42EB30, 0x446D00, 0x446D10, 0x446D20, 0x44B2E0, 0x433D40, 0x42D650};
 
     /** A mod's own voices for the transformation and in place of game voices, from its mod.ini
      * [OpenSA2] group: TransformVoices=<cue>,<cue> (bank 3 cues: during the flash, after it),
      * TransformFlash=<rrggbb>[,<frames>], VoiceCues=<voice>:<cue>,... (PlayVoice numbers played as a
-     * bank 3 cue while player 1 is Sonic). The first mod switched on that names each wins. */
+     * bank 3 cue while player 1 is Sonic), AuraColor=<rrggbb> (Super Sonic's aura). The first mod
+     * switched on that names each wins. */
     static final int PLAY_SOUND = 0x437260, PLAY_VOICE = 0x443130;
 
     static void modVoices(Context c, Map<String, String> into) {
@@ -165,10 +179,11 @@ final class NativePatch {
                 if (e.getKey().equalsIgnoreCase("OpenSA2")) g = e.getValue();
             if (g == null) continue;
             String tv = ModManager.get(g, "TransformVoices"), tf = ModManager.get(g, "TransformFlash"),
-                   vc = ModManager.get(g, "VoiceCues");
+                   vc = ModManager.get(g, "VoiceCues"), ac = ModManager.get(g, "AuraColor");
             if (!tv.isEmpty() && !into.containsKey(TRANSFORM_VOICES_KEY)) into.put(TRANSFORM_VOICES_KEY, tv);
             if (!tf.isEmpty() && !into.containsKey(TRANSFORM_FLASH_KEY)) into.put(TRANSFORM_FLASH_KEY, tf);
             if (!vc.isEmpty() && !into.containsKey(VOICE_CUES_KEY)) into.put(VOICE_CUES_KEY, vc);
+            if (!ac.isEmpty() && !into.containsKey(AURA_COLOR_KEY)) into.put(AURA_COLOR_KEY, ac);
         }
     }
 
@@ -242,6 +257,7 @@ final class NativePatch {
         if (p.getBoolean(MOVES_PREF, true)) out.put(MOVES_KEY, "1");
         if (p.getBoolean(SUPER_PREF, false)) out.put(SUPER_KEY, "1");
         else if (p.getBoolean(TRANSFORM_PREF, true)) out.put(TRANSFORM_KEY, "1");
+        if (p.getBoolean(AURA_PREF, true)) out.put(AURA_KEY, "1");
         return out;
     }
 
@@ -561,10 +577,10 @@ final class NativePatch {
         Map<String, String> swaps = swaps(c);
         if (swaps.containsKey(SUPER_KEY) || swaps.containsKey(TRANSFORM_KEY))
             if (superEffects(c)) swaps.put(SUPER_EFFECTS_KEY, "1");
-        if (swaps.containsKey(TRANSFORM_KEY)) modVoices(c, swaps);
+        if (swaps.containsKey(TRANSFORM_KEY) || swaps.containsKey(SUPER_KEY)) modVoices(c, swaps);
         boolean anySwap = false;
         for (Map.Entry<String, String> e : swaps.entrySet())
-            anySwap |= !e.getKey().equals(MOVES_KEY) && !e.getKey().equals(e.getValue());
+            anySwap |= !e.getKey().equals(MOVES_KEY) && !e.getKey().equals(AURA_KEY) && !e.getKey().equals(e.getValue());
         List<CodeList.Code> codes = ModManager.codesToRun(c, new ArrayList<>());
         boolean menu = OpenSa2.prefs(c).getBoolean(MENU_PREF, true);
         if (!anySwap && codes.isEmpty() && !menu) return new Plan();
@@ -848,6 +864,29 @@ final class NativePatch {
                 if ("1".equals(swaps.get(SUPER_EFFECTS_KEY))) {
                     b.append(String.format(Locale.ROOT, "E 0 %x %x %s\n", TEX_SONEFF, SUPER_EFFECTS_NAME_VA, SUPER_EFFECTS_NAME));
                     plan.said.add("Characters: Super Sonic's effects use a mod's " + SUPER_EFFECTS_PAK);
+                }
+                long[] ad = lib.fns.get(AURA_DISPLAY);
+                if ("1".equals(swaps.get(AURA_KEY)) && rf != null && ad != null && !redirects.containsKey(AURA_DISPLAY)) {
+                    StringBuilder al = new StringBuilder();
+                    for (int i = 0; i < AURA_FNS.length && al != null; i++) {
+                        long[] f = lib.fns.get(AURA_FNS[i]);
+                        if (f == null) al = null;
+                        else al.append(String.format(Locale.ROOT, "a %x %x %x\n", i, f[0], AURA_FNS[i]));
+                    }
+                    if (al == null) {
+                        plan.said.add("Characters: the super aura needs game code this build lacks; left out");
+                    } else {
+                        b.append(al);
+                        b.append(String.format(Locale.ROOT, "J %x %x\n", rf[0], rv));
+                        String acs = swaps.get(AURA_COLOR_KEY);
+                        int tint = acs == null ? -1 : num(acs.replace("#", ""), 16, -1);
+                        if (tint >= 0) b.append(String.format(Locale.ROOT, "c 0 %x\n", tint & 0xFFFFFF));
+                        b.append(String.format(Locale.ROOT, "W %x %x %x %x %s %s\n", ad[0], ad[1], 21, 0,
+                                               hex(lib.bytes(ad[0], 16)), "super forms' aura"));
+                        plan.patches++;
+                        plan.said.add("Characters: the super forms glow" + (tint >= 0
+                                ? String.format(Locale.ROOT, " (Super Sonic's aura #%06X, from a mod)", tint & 0xFFFFFF) : ""));
+                    }
                 }
                 b.append(String.format(Locale.ROOT, "W %x %x %x %x %s %s\n", smain[0], smain[1], 18, 0,
                                        hex(lib.bytes(smain[0], 16)), "Sonic and Shadow as their super forms"));

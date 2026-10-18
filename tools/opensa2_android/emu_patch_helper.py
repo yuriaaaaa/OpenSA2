@@ -1039,6 +1039,183 @@ def hunt_checks(game, patch, check):
     check(frame(0x10, 0x1000800, 6) == 2, "hunt: a walker's new object gets it again")
 
 
+AURA_FNS = (0x411600, 0x44C350, 0x427470, 0x4274E0, 0x4275B0, 0x427680, 0x427750, 0x42D340, 0x42EB30,
+            0x446D00, 0x446D10, 0x446D20, 0x44B2E0, 0x433D40, 0x42D650)
+
+
+def aura_checks(game, patch, check):
+    """The a and c lines and kind 21, with the ret function sub_6fe430 standing in for every game
+    function the aura uses (told apart by the guest address each call is given) and sub_411600 for
+    Super_DispDelay3: becoming the super form loads SSONEFFTEX (LoadTextureList, ECX the name, EDX
+    the list) and gives the player's task the display as its DisplaySub_Delayed4; the display, for
+    that task outside Final Hazard, draws the aura through the game's calls (position, Z/X/0x8000-Y
+    turns, scale, 3 down, a c line's tint as a constant material, the model with ProcessChunkModel)
+    with SSONEFFTEX in use and a texture number 3-8, then puts the matrix stack, texture list and
+    number back and returns without the game's body; in Final Hazard the body runs; another task,
+    the stage's end (animation 54) or no c line draw less or nothing; back from the super form the
+    task's own display returns. A plan missing an a line leaves the display alone."""
+    sym = game.syms
+    fb, _ = sym["sa2_guest_fast_base"]
+    fn, fsize = sym["sub_7f4700"]
+    rt, _ = sym["sub_6fe430"]
+    dfn, dsize = sym["sub_411600"]
+    f16 = game.b[game.vaddr_to_off(fn):game.vaddr_to_off(fn) + 16].hex()
+    d16 = game.b[game.vaddr_to_off(dfn):game.vaddr_to_off(dfn) + 16].hex()
+    OBJ, D1, CO2, M, RI = 0x1001000, 0x1003000, 0x1000000, 0x1A50000, 0x2675000
+    f32 = lambda x: struct.unpack("<I", struct.pack("<f", x))[0]
+
+    def setup(lines, n_applied):
+        a_lines = [f"a {i:x} {0 if i in (0, 14) else rt:x} {va:x}" for i, va in enumerate(AURA_FNS)]
+        a_lines = [l for l in a_lines if not any(l.startswith(f"a {d:x} ") for d in lines.get("drop", ()))]
+        plan = "\n".join(["opensa2-patch 1", f"G {fb:x} 20000000", "C 1934b70 1de9600 1 5b", "H 42 1",
+                          "X 0 1100000 1100100 148 9", "X 1 1100000 1100100 148 a", f"F {rt:x} 6fe430 {rt:x} 6fe430",
+                          f"J {rt:x} 6fe430"] + lines.get("extra", []) + a_lines
+                         + [f"W {fn:x} {fsize:x} 12 0 {f16} supermain", f"W {dfn:x} {dsize:x} 15 0 {d16} aura"]) + "\n"
+        uc, sc = boot(game, patch, plan.encode())
+        check(f"{n_applied} of 2 patch(es) applied" in sc.err.decode(), f"aura: {n_applied} of 2 wrappers applied")
+        gb = guest_base_var(uc, game)
+        uc.mem_write(gb, struct.pack("<Q", GUEST))
+        for a in (0x1934000, 0x1DE9000, 0x1DEA000, 0x1000000, 0x1100000, 0x1200000, 0x1F0000, 0x1700000, 0x1730000,
+                  0x1740000, 0x1A50000, 0x2670000, 0xA00000):
+            try:
+                uc.mem_map(GUEST + a, 0x10000, UC_PROT_READ | UC_PROT_WRITE)
+            except UcError:
+                pass
+        uc.mem_write(GUEST + 0x1934B70, struct.pack("<h", 13))
+        uc.mem_write(GUEST + 0x1934BE0, struct.pack("<h", 16))
+        uc.mem_write(GUEST + 0x1DE9600, struct.pack("<II", CO2, 0))
+        uc.mem_write(GUEST + 0x1DEA6C0, struct.pack("<II", D1, 0))
+        uc.mem_write(GUEST + 0x1DEA6E0, struct.pack("<II", OBJ, 0))
+        obj = bytearray(0x50)
+        struct.pack_into("<I", obj, 0x28, 0xABCDEF)
+        struct.pack_into("<I", obj, 0x34, D1)
+        struct.pack_into("<I", obj, 0x40, CO2)
+        uc.mem_write(GUEST + OBJ, bytes(obj))
+        d1 = bytearray(0x40)
+        d1[0] = 6                                                     # in a jump
+        struct.pack_into("<3i3f3f", d1, 8, 0x100, 0x200, 0x300, 10.0, 20.0, 30.0, 1.0, 1.5, 2.0)
+        uc.mem_write(GUEST + D1, bytes(d1))
+        co2 = bytearray(0x400)
+        struct.pack_into("<I", co2, 0x198, 0x1200000)
+        struct.pack_into("<I", co2, 0x394, 0xAAAA0000)
+        uc.mem_write(GUEST + CO2, bytes(co2))
+        uc.mem_write(GUEST + 0x1100000, struct.pack("<iI", 328, 0x5678) + struct.pack("<iI", -1, 0))
+        uc.mem_write(GUEST + 0x1200000, bytes(16 * 203))
+        # SSONEFFTEX: 20 textures, loaded; the aura's texture number; the matrix stack; RenderInfo
+        uc.mem_write(GUEST + 0x170ACD4, struct.pack("<II", 0x1705000, 20))
+        for i in range(20):
+            uc.mem_write(GUEST + 0x1705000 + 12 * i, struct.pack("<III", 0x1706000, 0, 0x1707000 + i))
+        uc.mem_write(GUEST + 0x170ACEE, bytes([0x55]))
+        uc.mem_write(GUEST + M, struct.pack("<12f", *range(1, 13)))
+        uc.mem_write(GUEST + 0x1A557FC, struct.pack("<I", M))
+        uc.mem_write(GUEST + 0x2670588, struct.pack("<I", M + 0x1000))
+        uc.mem_write(GUEST + 0x2670544, struct.pack("<I", RI))
+        uc.mem_write(GUEST + RI + 0x20, struct.pack("<I", 0x777777))
+        calls = []
+
+        def seen(u, addr, size, data):
+            st = bytes(u.mem_read(STATE, 0x1000))
+            esp = u32(st, 0x908)
+            args = struct.unpack("<4I", bytes(u.mem_read(GUEST + esp + 4, 16)))
+            calls.append({"va": u.reg_read(UC_ARM64_REG_X1), "eax": u32(st, 0x8A8), "ebx": u32(st, 0x8B8),
+                          "ecx": u32(st, 0x8C8), "edx": u32(st, 0x8D8), "args": args,
+                          "tex": u32(bytes(u.mem_read(GUEST + RI + 0x20, 4)), 0),
+                          "anim": bytes(u.mem_read(GUEST + 0x170ACEE, 1))[0],
+                          "m30": bytes(u.mem_read(GUEST + M + 0x30, 0x30))})
+        uc.hook_add(UC_HOOK_CODE, seen, begin=GAME_BASE + rt, end=GAME_BASE + rt)
+        return uc, sc, calls
+
+    def aura_calls(calls):   # leaving out the J line's ret (the same stand-in) and the loaders
+        return [c for c in calls if c["va"] in set(AURA_FNS[2:14])]
+
+    def frame(uc, rings=60, press=0, frames=7):
+        uc.mem_write(GUEST + 0x174B028, struct.pack("<h", rings))
+        uc.mem_write(GUEST + 0x174B03C, struct.pack("<I", frames))
+        uc.mem_write(GUEST + 0x1DEFC10, struct.pack("<I", press))
+        uc.mem_write(GUEST + 0x1F8000, struct.pack("<I", 0x401234))
+        st = bytearray(0x1000)
+        struct.pack_into("<I", st, 0x908, 0x1F8000)
+        uc.mem_write(STATE, bytes(st))
+        run_function(uc, GAME_BASE + fn, STATE, 0x7F4700, 0, limit=400000)
+
+    def display(uc, task=OBJ, body=0):   # body: the stand-in's own body (a `ret 4`) is to run
+        uc.mem_write(GUEST + 0x1F8000, struct.pack("<II", 0x401234, task))
+        st = bytearray(0x1000)
+        struct.pack_into("<I", st, 0x908, 0x1F8000)
+        uc.mem_write(STATE, bytes(st))
+        run_function(uc, GAME_BASE + dfn, STATE, 0x411600, 0, limit=400000)
+        s2 = bytes(uc.mem_read(STATE, 0x1000))
+        return (u32(s2, 0x908), u32(s2, 0x9A8)) == (0x1F8004 + 4 * body, 0x401234)
+
+    delayed4 = lambda uc: u32(bytes(uc.mem_read(GUEST + OBJ + 0x28, 4)), 0)
+
+    # Always super, Sonic, tinted green.
+    uc, sc, calls = setup({"extra": ["c 0 40ff60"]}, 2)
+    frame(uc)
+    load = [c for c in calls if c["va"] == 0x44C350]
+    check(len(load) == 1 and (load[0]["ecx"], load[0]["edx"]) == (0x8BAA1C, 0x170ACD4),
+          f"aura: SSONEFFTEX loaded with the super form ({[(hex(c['ecx']), hex(c['edx'])) for c in load]})")
+    check(delayed4(uc) == 0x411600, f"aura: the task's DisplaySub_Delayed4 is the display ({hex(delayed4(uc))})")
+    calls.clear()
+    check(display(uc), "aura: the display returns normally")
+    check(calls and calls[-1]["va"] == 0x6FE430, "aura: and through the bare ret, not the game's body")
+    calls[:] = aura_calls(calls)
+    got = [c["va"] for c in calls]
+    want = [0x427470, 0x42D340, 0x427680, 0x4274E0, 0x4275B0, 0x427750, 0x427470, 0x42D340,
+            0x446D00, 0x446D20, 0x44B2E0, 0x42EB30, 0x433D40, 0x446D10]
+    check(got == want, f"aura: the game's calls in order ({[hex(v) for v in got]})")
+    if got == want:
+        c = calls
+        check(c[0]["eax"] == M + 0x30 and c[0]["args"][:3] == (f32(10), f32(20), f32(30))
+              and c[0]["m30"] == bytes(uc.mem_read(GUEST + M, 0x30)), "aura: pushed, then at the character's position")
+        check([(x["ebx"], x["args"][0]) for x in c[2:5]] == [(M + 0x30, 0x300), (M + 0x30, 0x100), (M + 0x30, 0x7E00)],
+              "aura: turned Z, X, then 0x8000 - Y")
+        check(c[5]["args"][:3] == (f32(1.0), f32(1.5), f32(2.0)), "aura: scaled as the character")
+        check(c[6]["eax"] == M + 0x60 and c[6]["args"][:3] == (0, f32(-3.0), 0), "aura: pushed again, 3 down")
+        check(c[9]["eax"] == 0x10, "aura: constant material on")
+        check(c[10]["args"] == (f32(1.0), f32(0x40 / 255), f32(1.0), f32(0x60 / 255)), "aura: tinted 40ff60")
+        check(c[11]["args"][:2] == (0x170B47C, 0x42D650), "aura: the model drawn with ProcessChunkModel")
+        check(c[11]["tex"] == 0x170ACD4 and 3 <= c[11]["anim"] <= 8,
+              f"aura: SSONEFFTEX in use, texture {c[11]['anim']} (3-8 for Sonic)")
+    after = (u32(bytes(uc.mem_read(GUEST + 0x1A557FC, 4)), 0), u32(bytes(uc.mem_read(GUEST + RI + 0x20, 4)), 0),
+             bytes(uc.mem_read(GUEST + 0x170ACEE, 1))[0])
+    check(after == (M, 0x777777, 0x55), f"aura: matrix stack, texture list and number put back ({after})")
+    check("aura: player 0 glows, tinted 0x40ff60" in sc.err.decode(), "aura: said once")
+    calls.clear()
+    check(display(uc, 0x1001800) and not aura_calls(calls), "aura: another task gets nothing")
+    uc.mem_write(GUEST + CO2 + 0x178, struct.pack("<h", 54))
+    calls.clear()
+    check(display(uc) and not aura_calls(calls), "aura: none at the stage's end (animation 54)")
+    uc.mem_write(GUEST + CO2 + 0x178, struct.pack("<h", 0))
+    uc.mem_write(GUEST + 0x1934B70, struct.pack("<h", 0x42))
+    calls.clear()
+    check(display(uc, body=1) and not aura_calls(calls) and 0x6FE430 not in {c["va"] for c in calls},
+          "aura: in Final Hazard the game's own body runs")
+
+    # Transforming, Shadow, no tint; back from the super form.
+    uc, sc, calls = setup({"extra": ["B 200 32"]}, 2)
+    uc.mem_write(GUEST + CO2 + 3, bytes([1]))
+    frame(uc)
+    check(delayed4(uc) == 0xABCDEF, "aura (transform): nothing before transforming")
+    frame(uc, 60, 0x200)
+    check(delayed4(uc) == 0x411600, "aura (transform): the display on transforming")
+    calls.clear()
+    display(uc)
+    calls[:] = aura_calls(calls)
+    got = [c["va"] for c in calls]
+    check(got == [0x427470, 0x42D340, 0x427680, 0x4274E0, 0x4275B0, 0x427750, 0x427470, 0x42D340, 0x42EB30],
+          f"aura (transform): no tint without a c line ({[hex(v) for v in got]})")
+    check(calls and 9 <= calls[-1]["anim"] <= 14, "aura (transform): texture 9-14 for Shadow")
+    frame(uc, 55, 0x200, 8)
+    check(delayed4(uc) == 0xABCDEF, f"aura (transform): the task's own display back after ({hex(delayed4(uc))})")
+
+    # An a line missing: the display is not wrapped, so the task is not given it.
+    uc, sc, calls = setup({"drop": (8,)}, 1)
+    frame(uc)
+    check(delayed4(uc) == 0xABCDEF, "aura: a plan missing an a line leaves the task's display alone")
+    print("   ", [l for l in sc.err.decode().splitlines() if "aura" in l][:3])
+
+
 def layout_checks(game, patch, check):
     """Kind 3 (laid out at 16:9) around sub_86eac0, which calls the ret function sub_6fe430,
     itself traced (kind 4): inside, HorizontalResolution reads 1920 for a 2340x1080 screen and the
@@ -1502,6 +1679,7 @@ def main():
     super_checks(game, patch, check)
     flash_voice_checks(game, patch, check)
     hunt_checks(game, patch, check)
+    aura_checks(game, patch, check)
     print("ALL PASS" if ok else "SOME FAILED")
     return 0 if ok else 1
 
