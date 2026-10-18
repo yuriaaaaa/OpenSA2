@@ -2,7 +2,7 @@
 
 Read this first, then `docs/HANDOFF.md` (the whole Android port) and the last sessions of
 `docs/android-session-2026-10-15.md`. The repo is github.com/yuriaaaaa/OpenSA2, branch
-`claude/project-thread-lpzylp`; the Android app is at 0.1.22. Keep the rules in HANDOFF.md
+`claude/project-thread-lpzylp`; the Android app is at 0.1.23. Keep the rules in HANDOFF.md
 section 2 (source-only repo, `tools/public_check.py` before commits, no attribution trailers, the
 mods and the game's files stay out of git).
 
@@ -100,7 +100,7 @@ Mod order on the phone: Chaos Nazo, Nazo Voices, Nazo, all on. Sora's "Super Son
 4. The aura: done in 0.1.22 (above). If it looks wrong on the phone, the Super aura switch turns
    it off; game.log's `aura:` lines say whether it was drawn.
 5. Build an APK only for helper or launcher changes: HANDOFF.md section 3. Bump the version to
-   0.1.22 / 12300. Use the same keystore. Run the emulator tests (`emu_patch_helper.py`, must end
+   the next (0.1.24 / 12500). Use the same keystore. Run the emulator tests (`emu_patch_helper.py`, must end
    ALL PASS), then deliver as 28 MiB 7z parts.
 
 ## Credits to keep in the mod.ini files

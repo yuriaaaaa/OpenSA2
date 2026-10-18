@@ -1043,6 +1043,90 @@ AURA_FNS = (0x411600, 0x44C350, 0x427470, 0x4274E0, 0x4275B0, 0x427680, 0x427750
             0x446D00, 0x446D10, 0x446D20, 0x44B2E0, 0x433D40, 0x42D650)
 
 
+def edge_rows(game, pairs):
+    """The edge table rows (offsets from the load address) of jcc-taken {target, source} pairs, found
+    in PT_GNU_RELRO as NativePatch.gameFixes finds them."""
+    relro = [p for p in game.ph if p[0] == 0x6474E552][0]
+    vaddr, off, filesz = relro[3], relro[2], relro[5]
+    d = game.b[off:off + filesz]
+    out = {}
+    for t, src in pairs:
+        for o in range(0, len(d) - 24, 8):
+            if u32(d, o) == t and u32(d, o + 4) == src and d[o + 8] == 2 and d[o + 9] == 0:
+                out[t] = vaddr + o
+                break
+    return out
+
+
+def edge_checks(game, patch, check):
+    """e lines: Pyramid Cave's branch at 0x7059AB into 0x7059AF, the rest of sub_7059a0 lifted as
+    sub_7059af. With the row allowed the game's own __remill_missing_block (policy 2, the
+    generated edge table) dispatches into sub_7059af with the state the branch left (ECX pushed,
+    EIP 0x7059AF); without it the runtime traps (sa2_trap_note, which calls the C library here).
+    A row that is not the plan's is left alone."""
+    sym = game.syms
+    rows = edge_rows(game, [(0x7059AF, 0x7059AB)])
+    check(0x7059AF in rows, "game fix: the edge table has Pyramid Cave's row (jcc-taken, not allowed)")
+    row = rows[0x7059AF]
+    fb, _ = sym["sa2_guest_fast_base"]
+    a0, _ = sym["sub_7059a0"]
+    af, _ = sym["sub_7059af"]
+    pol, _ = sym["sa2_missing_block_dispatch"]
+    reg, _ = sym["sa2_mb_register_generated"]
+
+    def run(lines):
+        plan = "\n".join(["opensa2-patch 1", f"G {fb:x} 20000000"] + lines) + "\n"
+        uc, sc = boot(game, patch, plan.encode())
+        bring_up(uc, game)
+        uc.reg_write(UC_ARM64_REG_X30, STOP)
+        uc.emu_start(GAME_BASE + reg, STOP, count=1_000_000)
+        uc.mem_write(GAME_BASE + pol, struct.pack("<i", 2))
+        gb = guest_base_var(uc, game)
+        uc.mem_write(gb, struct.pack("<Q", GUEST))
+        for a in (0x1AF0000, 0x1F0000):
+            try:
+                uc.mem_map(GUEST + a, 0x10000, UC_PROT_READ | UC_PROT_WRITE)
+            except UcError:
+                pass
+        uc.mem_write(GUEST + 0x1AF00CC, struct.pack("<I", 0x1234))
+        uc.mem_write(GUEST + 0x1F8000, struct.pack("<I", 0x704DA0))
+        st = bytearray(0x1000)
+        struct.pack_into("<I", st, 0x908, 0x1F8000)
+        struct.pack_into("<I", st, 0x8C8, 0x77)
+        uc.mem_write(STATE, bytes(st))
+        hit = []
+
+        def at(u, a, size, d):
+            hit.append(a)
+            u.emu_stop()
+        h = uc.hook_add(UC_HOOK_CODE, at, begin=GAME_BASE + af, end=GAME_BASE + af)
+        err = None
+        try:
+            run_function(uc, GAME_BASE + a0, STATE, 0x7059A0, 0, limit=200000, want_trace=False)
+        except Exception as e:  # the trap path reaches the C library
+            err = str(e)
+        uc.hook_del(h)
+        s2 = bytes(uc.mem_read(STATE, 0x1000))
+        allow = bytes(uc.mem_read(GAME_BASE + row + 9, 1))[0]
+        return uc, sc, bool(hit), err, (u32(s2, 0x908), u32(s2, 0x8C8), u32(s2, 0x9A8)), allow
+
+    uc, sc, hit, err, regs, allow = run([])
+    check(not hit and allow == 0, f"game fix: without the e line the branch is refused ({err})")
+    uc, sc, hit, err, regs, allow = run([f"e {row:x} 7059af 7059ab", f"e {row + 24:x} 7059af 7059ab",
+                                         f"e {row:x} 7059af 7059ab"])
+    log = sc.err.decode()
+    check(allow == 1, "game fix: the row's allow byte is set")
+    check("is followed" in log and "is not what the plan expects" in log and "already followed" in log,
+          "game fix: the log says followed, a row not the plan's is left alone, a repeat is already followed")
+    check(hit and regs == (0x1F7FFC, 0x1234, 0x7059AF),
+          f"game fix: the branch dispatches into sub_7059af with ECX pushed ({hit}, {[hex(x) for x in regs]})")
+    pushed = u32(bytes(uc.mem_read(GUEST + 0x1F7FFC, 4)), 0)
+    check(pushed == 0x77, f"game fix: the old ECX is on the guest stack ({pushed:#x})")
+    prot = [m for m in sc.mprotects if m[2] in (1, 3)]
+    check(len(prot) == 2 and prot[0][2] == 3 and prot[1][2] == 1 and prot[0][0] == prot[1][0],
+          "game fix: the edge table's page is opened R+W and put back to R")
+
+
 def aura_checks(game, patch, check):
     """The a and c lines and kind 21, with the ret function sub_6fe430 standing in for every game
     function the aura uses (told apart by the guest address each call is given) and sub_411600 for
@@ -1680,6 +1764,7 @@ def main():
     flash_voice_checks(game, patch, check)
     hunt_checks(game, patch, check)
     aura_checks(game, patch, check)
+    edge_checks(game, patch, check)
     print("ALL PASS" if ok else "SOME FAILED")
     return 0 if ok else 1
 

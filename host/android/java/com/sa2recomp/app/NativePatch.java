@@ -270,6 +270,7 @@ final class NativePatch {
         int[] entries = new int[0];          // the guest addresses, sorted
         final Map<String, long[]> named = new HashMap<>();
         long[][] loads = new long[0][];      // PT_LOAD: {vaddr, offset, filesz}
+        long[] relro;                        // PT_GNU_RELRO: {vaddr, offset, filesz}, or null
 
         Lib(File f) {
             file = f;
@@ -344,6 +345,7 @@ final class NativePatch {
             for (int i = 0; i < phnum; i++) {
                 int o = i * phentsize;
                 if (le32(ph, o) == 1) loads.add(new long[] {le64(ph, o + 16), le64(ph, o + 8), le64(ph, o + 32)});
+                if (le32(ph, o) == 0x6474E552) lib.relro = new long[] {le64(ph, o + 16), le64(ph, o + 8), le64(ph, o + 32)};
             }
             lib.loads = loads.toArray(new long[0][]);
             if (shnum <= 0 || shnum > 4096) throw new IOException("no section headers");
@@ -557,6 +559,48 @@ final class NativePatch {
         return false;
     }
 
+    // ------------------------------------------------------------------ fixes to the game
+
+    /**
+     * Conditional branches into the rest of their own function. The function map split each of
+     * these functions at a label just after the branch, and the two halves were lifted as two
+     * functions; the runtime follows only a `jmp` into another function's entry, so when the branch
+     * is taken the game stops ("no lifted block at ... reached by jcc-taken"). Pyramid Cave stops
+     * so at 0x007059AF as its title card shows: 0x007059A0 is push ecx; mov ecx,[0x01AF00CC];
+     * xor eax,eax; test ecx,ecx; jnz 0x007059AF; pop ecx; ret, read from the lifted code. Each
+     * pair is {target, source}: the target is the next lifted function's entry after the source,
+     * lifted whole from there, so following the branch runs on from the same state, as the
+     * processor does. The helper sets each row's allow byte in the runtime's edge table.
+     */
+    static final int[][] BRANCH_FIXES = {
+        {0x7059AF, 0x7059AB},   // Pyramid Cave
+        {0x674257, 0x67424E}, {0x6B165F, 0x6B165B}, {0x8287F6, 0x8287C7}, {0x82F706, 0x82F6F1},
+        {0x8305CC, 0x8305B2},
+    };
+
+    /** The e lines for BRANCH_FIXES whose rows this libsa2game.so's edge table has (a jcc-taken
+     * edge, not yet allowed); returns how many were written. */
+    static int gameFixes(Lib lib, StringBuilder b) {
+        if (lib.relro == null || lib.relro[2] <= 0 || lib.relro[2] > (16 << 20)) return 0;
+        byte[] d;
+        try {
+            d = lib.bytes(lib.relro[0], (int) lib.relro[2]);
+        } catch (IOException e) {
+            return 0;
+        }
+        int n = 0;
+        for (int[] f : BRANCH_FIXES) {
+            if (lib.nextAfter(f[1]) != f[0] || !lib.has(f[0])) continue;
+            for (int o = 0; o + 24 <= d.length; o += 8) {
+                if (le32(d, o) != f[0] || le32(d, o + 4) != f[1] || d[o + 8] != 2 || d[o + 9] != 0) continue;
+                b.append(String.format(Locale.ROOT, "e %x %x %x\n", lib.relro[0] + o, f[0], f[1]));
+                n++;
+                break;
+            }
+        }
+        return n;
+    }
+
     // ------------------------------------------------------------------ the plan
 
     /** The plan for the next Play: what it holds, for the launcher log and the game menu. */
@@ -565,6 +609,7 @@ final class NativePatch {
         final List<String> codes = new ArrayList<>();     // the code names reproduced natively
         String text = "";                                 // the plan file the helper reads
         int patches;
+        int fixes;                                        // e lines: fixes to the game itself
     }
 
     /**
@@ -583,7 +628,6 @@ final class NativePatch {
             anySwap |= !e.getKey().equals(MOVES_KEY) && !e.getKey().equals(AURA_KEY) && !e.getKey().equals(e.getValue());
         List<CodeList.Code> codes = ModManager.codesToRun(c, new ArrayList<>());
         boolean menu = OpenSa2.prefs(c).getBoolean(MENU_PREF, true);
-        if (!anySwap && codes.isEmpty() && !menu) return new Plan();
         if (!new File(c.getApplicationInfo().nativeLibraryDir, HELPER).isFile()) {
             Plan p = new Plan();
             p.said.add("Native patches: this build has no " + HELPER + ", so code patches and character swaps are off");
@@ -596,12 +640,12 @@ final class NativePatch {
             return p;
         }
         Plan plan = build(lib, codes, swaps, codeRanges(), menu, StageLayouts.lines(c));
-        if (plan.patches == 0) return plan;
+        if (plan.patches == 0 && plan.fixes == 0) return plan;
         String refused = probe(c);
         if (refused != null) {
             plan.said.add("Native patches: Android will not load the helper into the game on this phone (" + refused
                           + "), so code patches and character swaps are off");
-            plan.patches = 0;
+            plan.patches = plan.fixes = 0;
             return plan;
         }
         try {
@@ -609,7 +653,7 @@ final class NativePatch {
         } catch (IOException e) {
             out.delete();
             plan.said.add("Native patches: could not write the plan (" + e.getMessage() + ")");
-            plan.patches = 0;
+            plan.patches = plan.fixes = 0;
         }
         return plan;
     }
@@ -1044,6 +1088,10 @@ final class NativePatch {
             plan.patches = 0;
             return plan;
         }
+        plan.fixes = gameFixes(lib, b);
+        if (plan.fixes > 0)
+            plan.said.add("Game fixes: " + plan.fixes + " branch(es) the recompiled game stopped at are followed"
+                          + " (Pyramid Cave's among them)");
         for (String n : plan.codes) b.append("# code ").append(n).append('\n');
         plan.text = b.toString();
         return plan;

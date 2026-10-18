@@ -41,7 +41,7 @@ with an aarch64 Android target (for the helper), Java 17+, Python 3 with `unicor
 
 ```bash
 # APK (the version name/code defaults live in build_apk.py; bump them each release:
-#      0.1.22-opensa2 / 12300 now, next 0.1.23-opensa2 / 12400)
+#      0.1.23-opensa2 / 12400 now, next 0.1.24-opensa2 / 12500)
 python3 tools/opensa2_android/build_apk.py \
   --release-apk <OpenSA2-v0.1.0-alpha.1-android-arm64.apk> \
   --sdk <android-sdk> --sdl <SDL3-3.4.16> \
@@ -136,6 +136,7 @@ Check before adding one: a clash (I once reused `V`) silently breaks other featu
 | 0.1.21 | Speed characters and walkers in the hunting stages get the emerald manager (no radar) and the vanilla layout, not the SA2 Randomizer's (its goal ring at the start); kind 19 decides by count when texture names cannot be read. |
 | 0.1.20 | Transformation flash (ScreenFadeARGB) and a mod's voice cues; voice-number log and mod voice mapping (kind 20); a mod's super effect textures (csonefftex); the ball keeps the super textures when the lists match; Always super moved to a new setting. |
 | 0.1.22 | The super aura: Final Hazard's glow around Super Sonic and Super Shadow in every stage (kind 21 around Super_DispDelay3, a and c lines), a "Super aura" setting (on), and a mod's `AuraColor=<rrggbb>` tinting Super Sonic's (Chaos Nazo: green). |
+| 0.1.23 | Pyramid Cave no longer stops after its title card (with or without mods): the game reached a conditional branch at 0x007059AB into the rest of its own function (0x007059AF, split off by the function map and lifted as its own function), which the runtime refuses. The launcher now always writes `e` lines (NativePatch.BRANCH_FIXES: that branch and five more of the same shape), and the helper sets each row's `allow` byte in the runtime's edge table. |
 
 ## 6. Debugging record (the causes found)
 

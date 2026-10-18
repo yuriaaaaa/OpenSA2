@@ -103,6 +103,15 @@
  * player 1 is Sonic (needs the J line). Kind 21 wraps Super_DispDelay3 for the super form's aura:
  * `a <index> <off> <va>` lines name the game functions it draws with, `c <CharID2> <rrggbb>` tints
  * a character's aura (needs the J and C lines; below).
+ *
+ * `e <off> <target va> <source va>` lines are fixes to the game itself, not patches: each names
+ * a row of the runtime's missing-block edge table (runtime/remill_runtime.h, sa2_mb_edge) whose
+ * conditional branch goes into the rest of its own function, which the function map split off
+ * as a function of its own (lifted whole from that address). The runtime refuses any branch but
+ * a `jmp` into another entry, so the game stopped there (Pyramid Cave, at 0x007059AB); the
+ * helper sets the row's `allow` byte, the runtime's own "dispatch although it is not a jmp", as
+ * Documentation/dispatch-exceptions.json does for the rows it reviewed. A row whose target,
+ * source or kind is not the plan's is left alone.
  */
 #include <stddef.h>
 #include <stdint.h>
@@ -482,6 +491,12 @@ typedef void *(*dispatch_fn)(uint32_t va, void *state, uint32_t pc, void *memory
 static dispatch_fn g_disp_orig;
 static uint32_t g_disp_seen[1024];
 
+/* e lines: edge table rows to allow (offset from the load address, target, source). */
+#define MAX_EDGES 16
+static uint64_t g_e_off[MAX_EDGES];
+static uint32_t g_e_target[MAX_EDGES], g_e_source[MAX_EDGES];
+static int g_ne;
+
 static void label_from(const char *s, char *out, size_t cap) {
     size_t k = 0;
     while (*s && *s != '\n' && k + 1 < cap) out[k++] = *s++;
@@ -614,6 +629,13 @@ static void parse_plan(const char *p) {
                 g_v_cue2 = (uint32_t)b;
                 g_v_frames = (uint32_t)c;
                 g_v_rgb = (uint32_t)d & 0xFFFFFF;
+            }
+        } else if (t == 'e') {
+            if (parse_hex(&s, &a) && parse_hex(&s, &b) && parse_hex(&s, &c) && g_ne < MAX_EDGES) {
+                g_e_off[g_ne] = a;
+                g_e_target[g_ne] = (uint32_t)b;
+                g_e_source[g_ne] = (uint32_t)c;
+                g_ne++;
             }
         } else if (t == 'a') {
             if (parse_hex(&s, &a) && parse_hex(&s, &b) && parse_hex(&s, &c) && a < AU_FNS) {
@@ -2441,6 +2463,46 @@ static void apply(uintptr_t base, uint64_t psize) {
     end();
 }
 
+/* The e lines: each row's allow byte set, when the row is the plan's (a jcc-taken edge, allow 0). */
+static void allow_edges(uintptr_t base, uint64_t psize) {
+    for (int i = 0; i < g_ne; i++) {
+        volatile uint8_t *row = (volatile uint8_t *)(base + g_e_off[i]);
+        uint32_t t = rd32((const uint8_t *)row), src = rd32((const uint8_t *)row + 4);
+        begin();
+        if (t != g_e_target[i] || src != g_e_source[i] || row[8] != 2) {
+            put("game fix left out: the edge row for ");
+            put_hex(g_e_target[i]);
+            put(" is not what the plan expects");
+            end();
+            continue;
+        }
+        if (row[9]) {
+            put("game fix: the branch at ");
+            put_hex(src);
+            put(" into ");
+            put_hex(t);
+            put(" is already followed");
+            end();
+            continue;
+        }
+        uintptr_t p0 = (uintptr_t)(row + 9) & ~(uintptr_t)(psize - 1);
+        if (sys_mprotect(p0, psize, PROT_READ | PROT_WRITE) != 0) {
+            put("game fix left out: could not open the edge table for ");
+            put_hex(t);
+            end();
+            continue;
+        }
+        row[9] = 1;
+        sys_mprotect(p0, psize, PROT_READ);
+        put("game fix: the branch at ");
+        put_hex(src);
+        put(" into the rest of its function (");
+        put_hex(t);
+        put(") is followed");
+        end();
+    }
+}
+
 /* The plan's path, from the environment the game started with. */
 static const char *plan_path(void) {
     long n = read_file("/proc/self/environ", g_big, sizeof g_big);
@@ -2469,7 +2531,9 @@ __attribute__((constructor)) static void opensa2_patch_init(void) {
         return;
     }
     parse_plan(g_plan);
+    allow_edges(base, page_size());
     if (!g_n) {
+        if (g_ne) return;
         say("the plan has no patches");
         return;
     }
