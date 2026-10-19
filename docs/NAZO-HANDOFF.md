@@ -15,7 +15,7 @@ OpenSA2 0.1.21:
 |---|---|---|
 | Nazo (no Seelkadoom) | v3 | KyronSaif/Sonicgamer11's Nazo over Sonic, with Wrath of Nazo as the alt costume. `sonicmdl/` and `sonic1mdl/` model folders. sonictex/sonic1tex are padded to 48 textures (the mod's models name textures 9, 10 and 37, and the archive past 9 crashed City Escape's start). s_efftex is recoloured silver (Nazo's spin and dash effects). |
 | Chaos Nazo | v4 | The super form. `ssonicmdl/` holds Nazo's body as model 328 with rewritten UVs. `PRS/ssonictex.pak` has green fur, yellow eyes, a purple gem, white gloves with gold cuffs, black/purple/gold shoes and a green-and-black ball; it is padded to 48 with the same texture names as Nazo's sonictex. `PRS/csonefftex.pak` holds the light-green effects. |
-| Nazo Voices | v9 | `MPB/b03_sne/3.csb`: the game's own one-player voice bank with cue files 0 (somersault), 9 (homing "hmmph"), 13 (hurt "No!"), 20 (laugh), 21 ("I'm back"), 22 ("Yes"), 23 ("Completely unreal"), 24 (death roar) and 25 ("Curse you"). Its mod.ini `[OpenSA2]` group sets `TransformVoices=18,19`, `TransformFlash=40FF60,302` (the flash as long as the laugh) and `VoiceCues=1541:20,1543:20,1545:21,1565:22,1567:22,1569:22,1571:22,1597:23` (tricks, the four death voices and rank B, numbers from SA Docs' Voice_List). |
+| Nazo Voices | v10 | `MPB/b03_sne/3.csb`: the game's own one-player voice bank with cue files 0 (somersault), 9 (homing "hmmph"), 13 (hurt "No!"), 20 ("Now you're going to call me Chaos Nazo"), 21 ("A bit more fitting, don't you think?"), 22 ("Yes"), 23 ("Completely unreal"), 24 (death roar), 25 ("Curse you") and 26 (laugh and "I'm back"). Its mod.ini `[OpenSA2]` group sets `TransformVoices=18,19`, `TransformFlash=40FF60,307` (the flash as long as the first line) and `VoiceCues=1541:20,1543:20,1545:21,1565:22,1567:22,1569:22,1571:22,1597:23,1595:24` (tricks, the four death voices, rank B and rank A, numbers from SA Docs' Voice_List). |
 
 Mod order on the phone: Chaos Nazo, Nazo Voices, Nazo, all on. Sora's "Super Sonic / Shadow"
 (DLL) mod and the original "Nazo & Seelkadoom" mod must be off. On the Characters screen, tick
@@ -61,8 +61,8 @@ Mod order on the phone: Chaos Nazo, Nazo Voices, Nazo, all on. Sora's "Super Son
      ```
      The game's file is in the bundle (`voice/game-b03_sne-3.csb`; from the user's phone, do not
   commit it). The bank must stay the game's layout: 40 cues, mono 22.05 kHz. A 5.8 MB bank made
-  from the two-player file was silent. More lines can go into cue files 26-30, 33, 34, 36 and 37
-  (numbers 24-28, 29, 30, 31, 32; see the table above).
+  from the two-player file was silent. More lines can go into cue files 27-30, 33, 34, 36 and 37
+  (numbers 25-28, 29, 30, 31, 32; see the table above).
 - **Textures and models:**
   - `pad.py` pads an archive.
   - `chaos.py` and `chaos2.py` are the Chaos Nazo recolour and UV work.
