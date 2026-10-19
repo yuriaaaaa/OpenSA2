@@ -42,6 +42,14 @@ Mod order on the phone: Chaos Nazo, Nazo Voices, Nazo, all on. Sora's "Super Son
   Sonic_Main's wrapper logs `voice: cue sound 0x30xx ended or was stopped after F frames`. Added
   because the stage-clear "Yes" (1593, PlayVoice(2, 1593) from the block at 0x43F0CA) and the rank
   lines were silent on the phone (2026-10-19); the next stage-clear log says which it is.
+- **0.1.27 bank lending:** the 0.1.26 log showed 1593, 1597 and 1599 refused at the stage clear
+  (in-stage cues played). PlaySoundProbably looks the cue up through sub_436180: bank row
+  `[0x1A55874] + 0x840 + 4 * bank` (bank 3 for 0x3000), a table with the cue count at +0 and 8-byte
+  entries from [+4]; an empty row refuses. Sonic_Main's wrapper notes bank 3's table each frame
+  (count >= 28, with a hash of its header, entries and first 64 sample bytes); on a refusal
+  play_cue puts it back in the row for the one call, if the hash still matches, then restores the
+  row. Logged as `voice: bank 3 is X, lent the stage's Y: played` (or still refused / changed).
+  Not yet heard on the phone: if the line still is silent, check whether the slot ends at once.
 - **Cue numbering (important):** the game's sound numbers for bank 3 (0x3000 + n) follow SA
   Docs' "Internal ID" column (Sound Effects page, Sonic/Shadow/Amy voices), a fixed table that
   leaves out cue files 11, 12, 18, 19, 31, 32, 35, 38 and 39: files 0-10 are 0-10, 13-17 are

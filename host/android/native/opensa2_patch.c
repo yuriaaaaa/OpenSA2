@@ -1530,11 +1530,58 @@ static uint32_t guest_call_args(void *state, void *memory, uint64_t off, uint32_
  * queue slot, or -1 when the game refused the sound (PlaySoundProbably's AL has bit 7 set). The
  * last N-line cue's slot is watched (watch_cue) so the log says if something stops it early. */
 static uint32_t g_w_slot, g_w_id, g_w_frames, g_nwlog;
+/* The sound queue's bank rows: [SND_QUEUE] + 0x840 + 4 * bank, each a table (count byte, then at +4
+ * the cues' 8-byte entries) or 0. At a stage clear the game empties bank 3's row, so the voice bank
+ * the mod's lines are in is refused (the stage-clear "Yes", the rank lines). bank3_note remembers
+ * the stage's table; play_cue lends it back for one call while its bytes are still the same. */
+#define BANK3_ROW 0x84Cu
+static uint32_t g_b3_tbl, g_b3_sum;
+static uint32_t bank3_sum(const uint8_t *g, uint32_t tbl) {
+    if (!g_ok(tbl, 8)) return 0;
+    uint32_t n = g[tbl], data = g_rd32(g, tbl + 4), h = 2166136261u;
+    if (n < 28 || !g_ok(data, 8 * n)) return 0;
+    for (uint32_t i = 0; i < 8; i++) h = (h ^ g[tbl + i]) * 16777619u;
+    for (uint32_t i = 0; i < 8 * n; i++) h = (h ^ g[data + i]) * 16777619u;
+    uint32_t first = g_rd32(g, data);
+    if (g_ok(first, 64))
+        for (uint32_t i = 0; i < 64; i++) h = (h ^ g[first + i]) * 16777619u;
+    return h | 1;
+}
+static void bank3_note(void) {
+    uint8_t *g = guest();
+    if (!g_nn || !g || !g_ok(SND_QUEUE, 4)) return;   /* only lent for N lines */
+    uint32_t q = g_rd32(g, SND_QUEUE);
+    if (!g_ok(q + BANK3_ROW, 4)) return;
+    uint32_t tbl = g_rd32(g, q + BANK3_ROW), sum = tbl ? bank3_sum(g, tbl) : 0;
+    if (sum) {
+        g_b3_tbl = tbl;
+        g_b3_sum = sum;
+    }
+}
 static int play_cue(void *state, void *memory, uint32_t cue) {
     if (!g_snd_off || cue >= 0xFFF) return -1;
     static const uint32_t zero[3] = {0, 0, 0};
     uint32_t r = guest_call_args(state, memory, g_snd_off, g_snd_va, 0x3000 + cue, zero, 3) & 0xFF;
     uint8_t *g = guest();
+    if ((r & 0x80) && g_b3_tbl && g_ok(SND_QUEUE, 4) && g_ok(g_rd32(g, SND_QUEUE) + BANK3_ROW, 4)) {
+        uint32_t row = g_rd32(g, SND_QUEUE) + BANK3_ROW, now = g_rd32(g, row);
+        int same = now != g_b3_tbl && bank3_sum(g, g_b3_tbl) == g_b3_sum;
+        if (same) {
+            g_wr32(g, row, g_b3_tbl);
+            r = guest_call_args(state, memory, g_snd_off, g_snd_va, 0x3000 + cue, zero, 3) & 0xFF;
+            g_wr32(g, row, now);
+        }
+        if (g_nwlog < 32) {
+            g_nwlog++;
+            begin();
+            put("voice: bank 3 is ");
+            put_hex(now);
+            put(same ? ", lent the stage's " : ", the stage's changed, not lent ");
+            put_hex(g_b3_tbl);
+            if (same) put(r & 0x80 ? ": still refused" : ": played");
+            end();
+        }
+    }
     if (r & 0x80) return -1;
     if (!g_ok(SND_QUEUE, 4)) return (int)r;
     uint32_t slot = g_rd32(g, SND_QUEUE) + 0x30 * r;
@@ -1546,6 +1593,7 @@ static int play_cue(void *state, void *memory, uint32_t cue) {
 
 /* Once a frame (from Sonic_Main's wrapper): logs when the watched cue's slot stops holding it. */
 static void watch_cue(void) {
+    bank3_note();
     if (!g_w_slot) return;
     uint8_t *g = guest();
     g_w_frames++;

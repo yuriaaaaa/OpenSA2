@@ -1048,8 +1048,36 @@ def flash_voice_checks(game, patch, check):
     uc.mem_write(GUEST + slots[0] + 0x24, struct.pack("<I", 0))
     call(fn, 0x7F4700)
     check("ended or was stopped after 2 frames" in sc.err.decode(), "voice: a cue stopped early is logged")
+    # a stage clear empties bank 3's row: the stage's table (noted each frame) is lent for the call
+    row, tbl = 0x1A60000 + 0x84C, 0x1A68000
+    uc.mem_write(GUEST + tbl, bytes([40, 0, 0, 0]) + struct.pack("<I", tbl + 0x100))
+    uc.mem_write(GUEST + tbl + 0x100, b"".join(struct.pack("<II", tbl + 0x400 + 0x40 * i, 0x40) for i in range(40)))
+    uc.mem_write(GUEST + tbl + 0x400, bytes(range(64)))
+    uc.mem_write(GUEST + row, struct.pack("<I", tbl))
+    call(fn, 0x7F4700)
+    uc.mem_write(GUEST + row, struct.pack("<I", 0))
+    rows = []
+
+    def bank(u, a, size, d):
+        st = u.reg_read(UC_ARM64_REG_X0)
+        if 0x3000 <= u32(bytes(u.mem_read(st + 0x8E8, 4)), 0) < 0x4000:
+            now = u32(bytes(u.mem_read(GUEST + row, 4)), 0)
+            rows.append(now)
+            uc.mem_write(st + 0x8A8, struct.pack("<I", 5 if now == tbl else 0xFF))
+    hb = uc.hook_add(UC_HOOK_CODE, bank, begin=GAME_BASE + rt, end=GAME_BASE + rt)
+    s5 = call(vfn, 0x46F1C1, num=0x618)
     said = sc.err.decode()
-    print("   ", [l for l in said.splitlines() if "voice:" in l or "flash" in l][:8])
+    check(u32(s5, 0x8A8) == 1 and rows == [0, tbl] and u32(bytes(uc.mem_read(GUEST + row, 4)), 0) == 0
+          and "lent the stage's 0x1a68000: played" in said,
+          f"voice: an emptied bank 3 row gets the stage's table for the call, then 0 again ({[hex(r) for r in rows]})")
+    uc.mem_write(GUEST + tbl + 0x400, b"\xff")
+    rows.clear()
+    s6 = call(vfn, 0x46F1C1, num=0x618)
+    uc.hook_del(hb)
+    said = sc.err.decode()
+    check(u32(s6, 0x8A8) != 1 and rows == [0] and "the stage's changed, not lent" in said,
+          "voice: a table whose bytes changed is not lent, Sonic's own line plays")
+    print("   ", [l for l in said.splitlines() if "voice:" in l or "flash" in l][:12])
 
 
 def hunt_checks(game, patch, check):
