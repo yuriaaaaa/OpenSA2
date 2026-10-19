@@ -1526,17 +1526,42 @@ static uint32_t guest_call_args(void *state, void *memory, uint64_t off, uint32_
 #define SND_QUEUE 0x1A55874u
 #define CUE_FRAMES 600u
 /* Plays cue n of the voice bank (sound 0x3000 + n), as Sora's mod plays its sounds; its slot is
- * given 10 seconds instead of the game's 2, so a mod's longer lines are not cut off. */
-static void play_cue(void *state, void *memory, uint32_t cue) {
-    if (!g_snd_off || cue >= 0xFFF) return;
+ * given 10 seconds instead of the game's 2, so a mod's longer lines are not cut off. Returns the
+ * queue slot, or -1 when the game refused the sound (PlaySoundProbably's AL has bit 7 set). The
+ * last N-line cue's slot is watched (watch_cue) so the log says if something stops it early. */
+static uint32_t g_w_slot, g_w_id, g_w_frames, g_nwlog;
+static int play_cue(void *state, void *memory, uint32_t cue) {
+    if (!g_snd_off || cue >= 0xFFF) return -1;
     static const uint32_t zero[3] = {0, 0, 0};
     uint32_t r = guest_call_args(state, memory, g_snd_off, g_snd_va, 0x3000 + cue, zero, 3) & 0xFF;
     uint8_t *g = guest();
-    if (r & 0x80 || !g_ok(SND_QUEUE, 4)) return;
+    if (r & 0x80) return -1;
+    if (!g_ok(SND_QUEUE, 4)) return (int)r;
     uint32_t slot = g_rd32(g, SND_QUEUE) + 0x30 * r;
-    if (!g_ok(slot, 0x30) || g_rd32(g, slot + 0x24) != 0x3000 + cue || g_rd16(g, slot + 0x1C) != 120) return;
+    if (!g_ok(slot, 0x30) || g_rd32(g, slot + 0x24) != 0x3000 + cue || g_rd16(g, slot + 0x1C) != 120) return (int)r;
     g[slot + 0x1C] = (uint8_t)CUE_FRAMES;
     g[slot + 0x1D] = (uint8_t)(CUE_FRAMES >> 8);
+    return (int)r;
+}
+
+/* Once a frame (from Sonic_Main's wrapper): logs when the watched cue's slot stops holding it. */
+static void watch_cue(void) {
+    if (!g_w_slot) return;
+    uint8_t *g = guest();
+    g_w_frames++;
+    if (g && g_ok(g_w_slot, 0x30) && g_rd32(g, g_w_slot + 0x24) == g_w_id && g_rd16(g, g_w_slot + 0x1C) && g_w_frames < CUE_FRAMES)
+        return;
+    if (g_nwlog < 32) {
+        g_nwlog++;
+        begin();
+        put("voice: cue sound ");
+        put_hex(g_w_id);
+        put(" ended or was stopped after ");
+        put_dec(g_w_frames);
+        put(" frames");
+        end();
+    }
+    g_w_slot = 0;
 }
 
 /* As guest_call, with EAX, EBX, ECX and EDX set and up to four 32-bit arguments pushed (the
@@ -1902,6 +1927,7 @@ static void super_off(uint8_t *g, int p, uint32_t co2, int gone) {
 static void *wrap_supermain(wrap_t *w, void *state, uint32_t pc, void *memory) {
     uint8_t *g = guest();
     hunt_check(state, memory, g);
+    watch_cue();
     if (g && g_guest_size && g_co2_va && g_level_va && g_ok(g_level_va, 2) && g_mdlfn_off && g_texfn_off) {
         uint32_t level = g_rd16(g, g_level_va);
         int fh = 0;
@@ -2035,7 +2061,26 @@ static void *wrap_voice(wrap_t *w, void *state, uint32_t pc, void *memory) {
         if (co2 && g_ok(co2 + 4, 1) && g[co2 + g_charid_off + 2] == 0) {
             for (uint32_t i = 0; i < g_nn; i++)
                 if (g_n_num[i] == num) {
-                    play_cue(state, memory, g_n_cue[i]);
+                    int r = play_cue(state, memory, g_n_cue[i]);
+                    if (g_nwlog < 32) {
+                        g_nwlog++;
+                        begin();
+                        put("voice: ");
+                        put_dec(num);
+                        put(r < 0 ? " -> cue refused by the game, Sonic's own line plays" : " -> cue ");
+                        if (r >= 0) {
+                            put_dec(g_n_cue[i]);
+                            put(" in slot ");
+                            put_dec((uint32_t)r);
+                        }
+                        end();
+                    }
+                    if (r < 0) break;   /* rather Sonic's line than none */
+                    if (g_ok(SND_QUEUE, 4)) {
+                        g_w_slot = g_rd32(g, SND_QUEUE) + 0x30 * (uint32_t)r;
+                        g_w_id = 0x3000 + g_n_cue[i];
+                        g_w_frames = 0;
+                    }
                     *(uint32_t *)(st + 0x8A8) = 1;
                     return ((lifted_fn)(g_base + g_ret_off))(state, g_ret_va, memory);
                 }

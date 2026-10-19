@@ -1026,7 +1026,30 @@ def flash_voice_checks(game, patch, check):
     said = sc.err.decode()
     check("voice: the game asks for voice 1560" in said and "voice: the game asks for voice 1561" in said,
           "voice: each number logged")
-    print("   ", [l for l in said.splitlines() if "voice:" in l or "flash" in l][:4])
+    check("voice: 1560 -> cue " in said, "voice: a played cue is logged with its slot")
+    # the game refusing the cue (AL with bit 7 set): Sonic's own line runs, and the log says so
+    def refuse(u, a, size, d):
+        st = u.reg_read(UC_ARM64_REG_X0)
+        if 0x3000 <= u32(bytes(u.mem_read(st + 0x8E8, 4)), 0) < 0x4000:
+            uc.mem_write(st + 0x8A8, struct.pack("<I", 0xFF))
+    hr = uc.hook_add(UC_HOOK_CODE, refuse, begin=GAME_BASE + rt, end=GAME_BASE + rt)
+    s4 = call(vfn, 0x46F1C1, num=0x618)
+    uc.hook_del(hr)
+    said = sc.err.decode()
+    check(u32(s4, 0x8A8) != 1 and u32(s4, 0x908) == 0x1F8004 and "cue refused by the game" in said,
+          f"voice: a refused cue runs the game's own voice (EAX {u32(s4, 0x8A8):#x})")
+    # a played cue whose slot is emptied: the next frame's Sonic_Main logs it
+    cues.clear(); slots.clear()
+    hs = uc.hook_add(UC_HOOK_CODE, snd, begin=GAME_BASE + rt, end=GAME_BASE + rt)
+    call(vfn, 0x46F1C1, num=0x618)
+    uc.hook_del(hs)
+    call(fn, 0x7F4700)
+    check("was stopped" not in sc.err.decode(), "voice: a cue still in its slot is not reported")
+    uc.mem_write(GUEST + slots[0] + 0x24, struct.pack("<I", 0))
+    call(fn, 0x7F4700)
+    check("ended or was stopped after 2 frames" in sc.err.decode(), "voice: a cue stopped early is logged")
+    said = sc.err.decode()
+    print("   ", [l for l in said.splitlines() if "voice:" in l or "flash" in l][:8])
 
 
 def hunt_checks(game, patch, check):

@@ -41,7 +41,7 @@ with an aarch64 Android target (for the helper), Java 17+, Python 3 with `unicor
 
 ```bash
 # APK (the version name/code defaults live in build_apk.py; bump them each release:
-#      0.1.25-opensa2 / 12600 now, next 0.1.26-opensa2 / 12700)
+#      0.1.26-opensa2 / 12700 now, next 0.1.27-opensa2 / 12800)
 python3 tools/opensa2_android/build_apk.py \
   --release-apk <OpenSA2-v0.1.0-alpha.1-android-arm64.apk> \
   --sdk <android-sdk> --sdl <SDL3-3.4.16> \

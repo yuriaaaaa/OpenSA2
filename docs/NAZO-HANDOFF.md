@@ -37,6 +37,11 @@ Mod order on the phone: Chaos Nazo, Nazo Voices, Nazo, all on. Sora's "Super Son
   PlaySoundProbably 0x437260 (ESI = 0x3000 + cue). Wrapper kind 20 around PlayVoice 0x443130 logs
   every voice number once (`opensa2-patch: voice: the game asks for voice N from 0x...`). For the
   numbers in VoiceCues it plays a bank cue instead, while player 1 is Sonic.
+- **0.1.26 voice log:** every N-line replacement logs `voice: N -> cue C in slot S`, or `cue refused
+  by the game` (PlaySoundProbably's AL bit 7; Sonic's own line then plays instead of silence), and
+  Sonic_Main's wrapper logs `voice: cue sound 0x30xx ended or was stopped after F frames`. Added
+  because the stage-clear "Yes" (1593, PlayVoice(2, 1593) from the block at 0x43F0CA) and the rank
+  lines were silent on the phone (2026-10-19); the next stage-clear log says which it is.
 - **Cue numbering (important):** the game's sound numbers for bank 3 (0x3000 + n) follow SA
   Docs' "Internal ID" column (Sound Effects page, Sonic/Shadow/Amy voices), a fixed table that
   leaves out cue files 11, 12, 18, 19, 31, 32, 35, 38 and 39: files 0-10 are 0-10, 13-17 are
