@@ -946,11 +946,13 @@ def flash_voice_checks(game, patch, check):
     check("2 of 2 patch(es) applied" in sc.err.decode(), "flash: the wrappers applied")
     gb = guest_base_var(uc, game)
     uc.mem_write(gb, struct.pack("<Q", GUEST))
-    for a in (0x1934000, 0x1DE9000, 0x1000000, 0x1100000, 0x1200000, 0x1F0000, 0x1730000, 0x1740000, 0x1710000):
+    for a in (0x1934000, 0x1DE9000, 0x1000000, 0x1100000, 0x1200000, 0x1F0000, 0x1730000, 0x1740000, 0x1710000,
+              0x1A50000, 0x1A60000):
         try:
             uc.mem_map(GUEST + a, 0x10000, UC_PROT_READ | UC_PROT_WRITE)
         except UcError:
             pass
+    uc.mem_write(GUEST + 0x1A55874, struct.pack("<I", 0x1A60000))
     uc.mem_write(GUEST + 0x1934B70, struct.pack("<h", 13))
     uc.mem_write(GUEST + 0x1934BE0, struct.pack("<h", 16))
     uc.mem_write(GUEST + 0x1DE9600, struct.pack("<II", 0x1000000, 0))
@@ -979,12 +981,21 @@ def flash_voice_checks(game, patch, check):
         run_function(uc, GAME_BASE + f, STATE, va, 0, limit=400000)
         return bytes(uc.mem_read(STATE, 0x1000))
 
-    cues = []
+    cues, slots = [], []
 
     def snd(u, a, size, d):
-        esi = u32(bytes(u.mem_read(u.reg_read(UC_ARM64_REG_X0) + 0x8E8, 4)), 0)
+        st = u.reg_read(UC_ARM64_REG_X0)
+        esi = u32(bytes(u.mem_read(st + 0x8E8, 4)), 0)
         if 0x3000 <= esi < 0x4000:
             cues.append(esi)
+            # as the game: the sound gets a queue slot (0x30 bytes, id at +0x24, 120 frames at
+            # +0x1C) and its number comes back in AL
+            k = len(cues)
+            slot = 0x1A60000 + 0x30 * k
+            uc.mem_write(GUEST + slot + 0x1C, struct.pack("<H", 120))
+            uc.mem_write(GUEST + slot + 0x24, struct.pack("<I", esi))
+            uc.mem_write(st + 0x8A8, struct.pack("<I", k))
+            slots.append(slot)
     hs = uc.hook_add(UC_HOOK_CODE, snd, begin=GAME_BASE + rt, end=GAME_BASE + rt)
     alphas, forms = [], []
     call(fn, 0x7F4700, press=0x200)
@@ -999,6 +1010,8 @@ def flash_voice_checks(game, patch, check):
     said = sc.err.decode()
     check(said.count("is the super form") == 1, "flash: one transformation")
     check(cues == [0x3012, 0x3013], f"flash: cue 18 as it starts, cue 19 as it ends ({[hex(c) for c in cues]})")
+    left = [struct.unpack("<H", bytes(uc.mem_read(GUEST + a + 0x1C, 2)))[0] for a in slots]
+    check(left == [600, 600], f"flash: the cues' slots get 600 frames, not the game's 120 ({left})")
     cues.clear()
     for action in (6, 37, 57, 57, 6, 57):
         uc.mem_write(GUEST + 0x1003000, bytes([action]))

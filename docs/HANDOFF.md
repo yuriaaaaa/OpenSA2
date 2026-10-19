@@ -41,7 +41,7 @@ with an aarch64 Android target (for the helper), Java 17+, Python 3 with `unicor
 
 ```bash
 # APK (the version name/code defaults live in build_apk.py; bump them each release:
-#      0.1.24-opensa2 / 12500 now, next 0.1.25-opensa2 / 12600)
+#      0.1.25-opensa2 / 12600 now, next 0.1.26-opensa2 / 12700)
 python3 tools/opensa2_android/build_apk.py \
   --release-apk <OpenSA2-v0.1.0-alpha.1-android-arm64.apk> \
   --sdk <android-sdk> --sdl <SDL3-3.4.16> \
@@ -138,6 +138,7 @@ Check before adding one: a clash (I once reused `V`) silently breaks other featu
 | 0.1.22 | The super aura: Final Hazard's glow around Super Sonic and Super Shadow in every stage (kind 21 around Super_DispDelay3, a and c lines), a "Super aura" setting (on), and a mod's `AuraColor=<rrggbb>` tinting Super Sonic's (Chaos Nazo: green). |
 | 0.1.23 | Pyramid Cave no longer stops after its title card (with or without mods): the game reached a conditional branch at 0x007059AB into the rest of its own function (0x007059AF, split off by the function map and lifted as its own function), which the runtime refuses. The launcher now always writes `e` lines (NativePatch.BRANCH_FIXES: that branch and five more of the same shape), and the helper sets each row's `allow` byte in the runtime's edge table. |
 | 0.1.24 | A mod's death line: mod.ini `[OpenSA2] DeathVoice=<cue>` becomes a `d` line, and kind 18 plays that cue once as Sonic's action becomes Action_DeathTransition (37) or Action_Death (57). Nazo Voices v7 (not committed): a new laugh (cue file 18, 5.03 s) and "I'm back" (19) cut from the user's clip, the death roar in file 22 (game number 20), TransformFlash=40FF60,302 so "I'm back" plays as the flash ends. |
+| 0.1.25 | The helper's sounds (play_cue: the transformation lines, the death line and VoiceCues) are no longer cut at 2 seconds: PlaySoundProbably returns its sound queue slot in AL (bit 7 when none was free); the slots are 0x30 bytes from the pointer at 0x01A55874, +0x1C the frames the game lets the sound run (120 for PlaySoundProbably; 0x437710 is the variant taking its own count) and +0x24 the sound id. After the call, a slot holding our id with 120 left gets 600. Nazo Voices v12 (not committed): the transformation lines compressed and about 12 dB louder. |
 
 ## 6. Debugging record (the causes found)
 

@@ -1520,11 +1520,23 @@ static uint32_t guest_call_args(void *state, void *memory, uint64_t off, uint32_
     return r;
 }
 
-/* Plays cue n of the voice bank (sound 0x3000 + n), as Sora's mod plays its sounds. */
+/* PlaySoundProbably returns the sound queue slot it took (AL; bit 7 set when none was free). The
+ * slots are 0x30 bytes each from the pointer at SND_QUEUE; +0x1C is the slot's frame count, which
+ * the game sets to 120 and stops the sound at, +0x24 the sound id. */
+#define SND_QUEUE 0x1A55874u
+#define CUE_FRAMES 600u
+/* Plays cue n of the voice bank (sound 0x3000 + n), as Sora's mod plays its sounds; its slot is
+ * given 10 seconds instead of the game's 2, so a mod's longer lines are not cut off. */
 static void play_cue(void *state, void *memory, uint32_t cue) {
     if (!g_snd_off || cue >= 0xFFF) return;
     static const uint32_t zero[3] = {0, 0, 0};
-    guest_call_args(state, memory, g_snd_off, g_snd_va, 0x3000 + cue, zero, 3);
+    uint32_t r = guest_call_args(state, memory, g_snd_off, g_snd_va, 0x3000 + cue, zero, 3) & 0xFF;
+    uint8_t *g = guest();
+    if (r & 0x80 || !g_ok(SND_QUEUE, 4)) return;
+    uint32_t slot = g_rd32(g, SND_QUEUE) + 0x30 * r;
+    if (!g_ok(slot, 0x30) || g_rd32(g, slot + 0x24) != 0x3000 + cue || g_rd16(g, slot + 0x1C) != 120) return;
+    g[slot + 0x1C] = (uint8_t)CUE_FRAMES;
+    g[slot + 0x1D] = (uint8_t)(CUE_FRAMES >> 8);
 }
 
 /* As guest_call, with EAX, EBX, ECX and EDX set and up to four 32-bit arguments pushed (the
