@@ -15,7 +15,7 @@ OpenSA2 0.1.21:
 |---|---|---|
 | Nazo (no Seelkadoom) | v3 | KyronSaif/Sonicgamer11's Nazo over Sonic, with Wrath of Nazo as the alt costume. `sonicmdl/` and `sonic1mdl/` model folders. sonictex/sonic1tex are padded to 48 textures (the mod's models name textures 9, 10 and 37, and the archive past 9 crashed City Escape's start). s_efftex is recoloured silver (Nazo's spin and dash effects). |
 | Chaos Nazo | v4 | The super form. `ssonicmdl/` holds Nazo's body as model 328 with rewritten UVs. `PRS/ssonictex.pak` has green fur, yellow eyes, a purple gem, white gloves with gold cuffs, black/purple/gold shoes and a green-and-black ball; it is padded to 48 with the same texture names as Nazo's sonictex. `PRS/csonefftex.pak` holds the light-green effects. |
-| Nazo Voices | v12 | `MPB/b03_sne/3.csb`: the game's own one-player voice bank with cue files 0 (somersault), 9 (homing "hmmph"), 13 (hurt "No!"), 20 ("Now you're going to call me Chaos Nazo"), 21 ("A bit more fitting, don't you think?"), 22 ("Yes"), 23 ("Completely unreal"), 24 (death roar), 25 ("Curse you") and 26 (laugh and "I'm back"). Its mod.ini `[OpenSA2]` group sets `TransformVoices=18,19`, `TransformFlash=40FF60,307` (the flash as long as the first line; the lines are compressed and about 12 dB louder, and need app 0.1.25, which lets the helper's cues run past the game's 2 seconds) and `VoiceCues=1541:20,1543:20,1545:21,1565:22,1567:22,1569:22,1571:22,1597:23,1595:24` (tricks, the four death voices, rank B and rank A, numbers from SA Docs' Voice_List). |
+| Nazo Voices | v13 | `MPB/b03_sne/3.csb`: the game's own one-player voice bank with cue files 0 (somersault), 9 (homing "hmmph"), 13 (hurt "No!"), 20 ("Now you're going to call me Chaos Nazo"), 21 ("A bit more fitting, don't you think?"), 22 ("Yes"), 23 ("Completely unreal"), 24 (death roar), 25 ("Curse you") and 26 (laugh and "I'm back"). Its mod.ini `[OpenSA2]` group sets `TransformVoices=18,19`, `TransformFlash=40FF60,307` (the flash as long as the first line; the lines are compressed and about 12 dB louder, and need app 0.1.25, which lets the helper's cues run past the game's 2 seconds) and `VoiceCues=1541:20,1543:20,1593:20,1553:20,1545:21,1565:22,1567:22,1569:22,1571:22,1597:23,1595:24` (tricks, stage clear 1593 and round clear 1553, which with 1541 are every Sonic "Yes!" on the list, the four death voices, rank B and rank A, numbers from SA Docs' Voice_List). v13's two transformation lines are the voice alone: Demucs (`htdemucs_ft`, two stems) split the user's clip, the gaps between words were muted, then compressed and limited (see Rebuilding). |
 
 Mod order on the phone: Chaos Nazo, Nazo Voices, Nazo, all on. Sora's "Super Sonic / Shadow"
 (DLL) mod and the original "Nazo & Seelkadoom" mod must be off. On the Characters screen, tick
@@ -53,7 +53,11 @@ Mod order on the phone: Chaos Nazo, Nazo Voices, Nazo, all on. Sora's "Super Son
 ## Rebuilding the mods (scripts in `tools/opensa2_android/modtools/`, README there)
 
 - **Voices:**
-  1. Trim and clean each clip: `prep.py <wav> <start> <end> <denoise> out.wav`.
+  1. Trim and clean each clip: `prep.py <wav> <start> <end> <denoise> out.wav`. A clip with music
+     or another voice under it: `python3 -m demucs --two-stems=vocals -n htdemucs_ft clip.wav`,
+     keep `vocals.wav`, mute the gaps between words (faster-whisper word times help), then
+     `ffmpeg -af "highpass=f=90,acompressor=threshold=-28dB:ratio=6:attack=4:release=90,volume=32dB,alimiter=limit=0.97"`
+     (v13's transformation lines). A voice speaking over Nazo's words stays; only a cleaner source fixes that.
   2. Convert to mono 22.05 kHz: `ffmpeg -ar 22050`.
   3. Build the bank from the game's own file:
      ```
